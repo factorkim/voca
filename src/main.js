@@ -1,5 +1,5 @@
 import './style.css';
-import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, urgency, newBudget, shouldIntroduceNew } from './sched.js';
+import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext } from './sched.js';
 import * as S from './store.js';
 
 const APP_VERSION = '0.1.0';
@@ -22,7 +22,7 @@ let WORDS = new Map(), ALL = [], ORDER = [], SETS = [], CARDS = new Map(), DAILY
 let SET = defaultSettings();
 const ui = {
   route: 'home', stage: 'boot', offline: false, loadError: false,
-  session: null, backlog: null, revealed: false, cur: null, curDir: 'en2ko', waiting: null,
+  session: null, backlog: null, revealed: false, cur: null, curDir: 'en2ko',
   filter: 'all', q: '', nextMode: 'daily', confirmDelete: false,
   shownAt: 0, revealedAt: 0, hidden: false, speaks: 0
 };
@@ -185,39 +185,27 @@ function nextInfo(now) {
 }
 
 /* ---------- 학습 세션 ---------- */
-function byDue(a, b) { return CARDS.get(a).due - CARDS.get(b).due; }
 function startSession(mode) {
-  ui.session = { id: uuid(), mode: mode || 'daily', startedAt: Date.now(), done: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, sinceNew: 0, q: null, finished: false, forced: false };
+  ui.session = { id: uuid(), mode: mode || 'daily', startedAt: Date.now(), done: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, sinceNew: 0, lastId: null, goalShown: false, q: null, finished: false };
   if (ui.session.mode === 'leech') ui.session.q = counts(Date.now()).leech.slice();
   pick();
 }
 function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.hidden = false; ui.speaks = 0; }
 function pick() {
   const s = ui.session, now = Date.now();
-  ui.revealed = false; ui.waiting = null; ui.cur = null;
+  ui.revealed = false; ui.cur = null;
   ui.curDir = SET.dir === 'mix' ? (Math.random() < 0.5 ? 'en2ko' : 'ko2en') : SET.dir;
   resetTimers();
   if (s.mode === 'leech') {
     while (s.q.length && !WORDS.has(s.q[0])) s.q.shift();
-    if (s.q.length) ui.cur = s.q.shift(); else s.finished = true;
-    return;
+    if (s.q.length) { ui.cur = s.q.shift(); return; }
+    s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
   }
-  const learn = [], rev = [], news = []; let wait = null;
-  ORDER.forEach((id) => {
-    const c = CARDS.get(id);
-    if (!c || c.phase === 'new') { news.push(id); return; }
-    if (c.due <= now) { (c.phase === 'learn' ? learn : rev).push(id); }
-    else if (c.phase === 'learn' && c.due - now <= 30 * MIN) { if (!wait || c.due < CARDS.get(wait).due) wait = id; }
-  });
-  // 추천 순서: ① 학습 중(몇 분 단위) 카드 → ② 새 단어를 복습 사이사이에 고르게 섞기 → ③ 가장 잊기 쉬운 복습 카드부터
-  learn.sort(byDue);
-  rev.sort((a, b) => urgency(CARDS.get(b), now) - urgency(CARDS.get(a), now));
-  const newLeft = Math.min(news.length, counts(now).newAvail);
-  if (learn.length) { ui.cur = learn[0]; return; }
-  if (shouldIntroduceNew(s.sinceNew, rev.length, newLeft)) { ui.cur = news[0]; return; }
-  if (rev.length) { ui.cur = rev[0]; return; }
-  if (wait) { if (s.forced) { ui.cur = wait; s.forced = false; } else ui.waiting = wait; return; }
-  s.finished = true;
+  // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
+  const r = chooseNext({ order: ORDER, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
+  if (!r) { s.finished = true; return; }
+  ui.cur = r.id;
+  if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
 function reveal() { if (ui.cur && !ui.revealed) { ui.revealed = true; ui.revealedAt = performance.now(); render(); } }
 function rate(r) {
@@ -243,7 +231,7 @@ function rate(r) {
     device: deviceInfo(), app_version: APP_VERSION
   });
 
-  s.done++; s[LETTER[r]]++; if (wasNew) { s.nw++; s.sinceNew = 0; } else s.sinceNew++;
+  s.lastId = id; s.done++; s[LETTER[r]]++; if (wasNew) { s.nw++; s.sinceNew = 0; } else s.sinceNew++;
   S.queueSession({
     id: s.id, user_id: USER.id, started_at: iso(s.startedAt), last_activity_at: iso(t), mode: s.mode, cards_done: s.done,
     n_wrong: s.w, n_close: s.c, n_right: s.r, n_unknown: s.u, n_known: s.k, n_new: s.nw, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, device: deviceInfo(), app_version: APP_VERSION
@@ -310,12 +298,12 @@ function masteryBar(c) {
 function viewHome() {
   const now = Date.now(), c = counts(now), t = todayLog(now);
   const week = lastDays(7, now); let wn = 0, wr = 0; week.forEach((d) => { wn += d.l.n || 0; wr += good(d.l); });
-  const can = c.left > 0 || c.soon > 0;
+  const can = ORDER.length > 0;   // 오늘 목표를 채워도 이어서 더 할 수 있어요
   const throttleNote = c.throttled ? '복습이 많이 밀려 있어서 오늘 새 단어는 ' + c.newAvail + '개로 줄였어요. 복습을 먼저 끝내면 부담이 덜해요.' : '';
-  const info = c.left > 0 ? throttleNote : (c.soon > 0 ? '곧 볼 카드가 ' + c.soon + '개 있어요.' : (nextInfo(now) || '오늘 분량을 모두 마쳤어요.'));
+  const info = c.left > 0 ? throttleNote : ('오늘 목표를 모두 채웠어요!' + (nextInfo(now) ? ' ' + nextInfo(now) + '.' : '') + ' 더 하고 싶다면 이어서 계속할 수 있어요.');
   let h = '<section class="hero"><p class="eyebrow">오늘 남은 카드</p><p class="big">' + c.left + '</p>' +
     '<dl class="trio"><div><dt>복습</dt><dd>' + c.dueReview + '</dd></div><div><dt>학습 중</dt><dd>' + c.dueLearn + '</dd></div><div><dt>새 단어</dt><dd>' + c.newAvail + '</dd></div></dl>' +
-    '<button class="btn primary block" data-act="start"' + (can ? '' : ' disabled') + '>' + (c.left > 0 ? '학습 시작' : (c.soon > 0 ? '곧 볼 카드 시작' : '오늘은 끝났어요')) + '</button>' +
+    '<button class="btn primary block" data-act="start"' + (can ? '' : ' disabled') + '>' + (c.left > 0 ? '학습 시작' : '이어서 더 학습하기') + '</button>' +
     (info ? '<p class="after">' + esc(info) + '</p>' : '') + '</section>';
   h += '<div class="strip"><div><b>' + streak(now) + '일</b><span>연속 학습</span></div><div><b>' + (t.n || 0) + '장</b><span>오늘 학습</span></div><div><b>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</b><span>최근 7일 정답률</span></div></div>';
   h += '<section class="block"><div class="block-h"><h2>익힌 정도</h2><span class="muted">' + (setLabel() ? esc(setLabel()) + ' · ' : '') + '단어 ' + c.total + '개</span></div>' + masteryBar(c) + '</section>';
@@ -333,12 +321,9 @@ function viewStudy() {
   const now = Date.now();
   const left = s.mode === 'leech' ? (s.q.length + (ui.cur ? 1 : 0)) : counts(now).left;
   const pct = s.done + left ? Math.round(s.done / (s.done + left) * 100) : 100;
-  const bar = '<div class="studybar"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button><span class="prog">오늘 ' + s.done + '장 · 남은 ' + left + '장</span></div>' +
+  const prog = left > 0 ? '오늘 ' + s.done + '장 · 남은 ' + left + '장' : '오늘 ' + s.done + '장 · 목표 달성';
+  const bar = '<div class="studybar"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button><span class="prog">' + esc(prog) + '</span></div>' +
     '<div class="track" role="progressbar" aria-label="이번 학습 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><i style="width:' + pct + '%"></i></div>';
-  if (ui.waiting) {
-    const c = CARDS.get(ui.waiting);
-    return bar + '<div class="state"><h2>잠깐 쉬어 가요</h2><p>다음 카드는 ' + esc(fmtDue(c, now)) + '에 나와요.</p><button class="btn primary" data-act="now">지금 바로 보기</button></div>';
-  }
   if (!ui.cur) {
     const tot = s.u + s.w + s.c + s.r + s.k;
     return bar + '<div class="state"><h2>' + (tot ? '수고했어요' : '지금 볼 카드가 없어요') + '</h2>' +
@@ -363,7 +348,7 @@ function viewStudy() {
   return bar + '<section class="card' + (ui.revealed ? ' open' : '') + '">' + tags + front + ans + '</section>';
 }
 function viewDock() {
-  if (ui.route !== 'study' || !ui.session || !ui.cur || ui.waiting) return '';
+  if (ui.route !== 'study' || !ui.session || !ui.cur) return '';
   if (!ui.revealed) return '<button class="btn primary block" data-act="reveal">정답 보기</button><p class="keys">스페이스 키로도 볼 수 있어요</p>';
   const now = Date.now(), c = CARDS.get(ui.cur) || blank();
   return '<div class="rates" role="group" aria-label="얼마나 알았는지 골라요">' + RATINGS.map((d) => '<button class="rate ' + d.key + '" data-act="rate" data-r="' + d.key + '"><span class="rl">' + d.label + '</span><span class="rv">' + esc(fmtDue(schedule(c, d.key, now), now)) + '</span></button>').join('') + '</div><p class="keys">키보드 1 · 2 · 3 · 4 · 5</p>';
@@ -588,7 +573,6 @@ document.addEventListener('click', (e) => {
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'reveal') reveal();
   else if (a === 'rate') rate(b.getAttribute('data-r'));
-  else if (a === 'now') { if (ui.session) { ui.session.forced = true; pick(); render(); } }
   else if (a === 'speak') { const w = WORDS.get(ui.cur); if (w) { ui.speaks++; speak(w.en); } }
   else if (a === 'filter') { ui.filter = b.getAttribute('data-f'); render(); }
   else if (a === 'login') doAuth(false);
@@ -619,7 +603,7 @@ document.addEventListener('change', (e) => {
   else if (t.id === 'imp' && t.files && t.files[0]) { importBackup(t.files[0]); t.value = ''; }
 });
 document.addEventListener('keydown', (e) => {
-  if (ui.route !== 'study' || !ui.cur || ui.waiting || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (ui.route !== 'study' || !ui.cur || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target, tag = t && t.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (!ui.revealed) { if ((e.key === ' ' || e.key === 'Enter') && tag !== 'BUTTON') { e.preventDefault(); reveal(); } }
@@ -638,7 +622,6 @@ setInterval(() => {
   if (S.pendingCount() > 0) scheduleFlush(0);
   if (document.hidden) return;
   if (ui.stage === 'ready' && ui.route === 'home') render();
-  else if (ui.route === 'study' && ui.waiting) { pick(); render(); }
 }, 30000);
 
 (function () { const h = (location.hash || '#home').slice(1); ui.route = ROUTES.indexOf(h) >= 0 ? h : 'home'; })();
