@@ -24,14 +24,25 @@ export function blank() {
   return { phase: 'new', ease: 2.3, ivl: 0, step: 0, reps: 0, lapses: 0, pend: 0, due: 0, last: 0, first: 0, n: 0, hist: [] };
 }
 
+// 기억 강도: 복습 단계 카드의 다음 간격에 곱하는 배율이에요. 1보다 작을수록 더 자주 복습해서 기억이 단단해져요.
+// (시뮬레이션: 표준 → 강화는 복습 약 +9%, 기억 유지율 +2%p / 최대는 +18%, +2.6%p)
+export const STRENGTH = [
+  { key: 'standard', scale: 1, label: '표준' },
+  { key: 'strong', scale: 0.85, label: '강화' },
+  { key: 'max', scale: 0.7, label: '최대' }
+];
+export const DEFAULT_SCALE = 0.85;
+
 // rating: 'unknown' | 'wrong' | 'close' | 'right' | 'known'. 새 카드 객체를 돌려줘요.
-export function schedule(card, rating, now) {
+// opts.scale: 기억 강도 배율 (생략하면 1)
+export function schedule(card, rating, now, opts = {}) {
   const c = Object.assign(blank(), card || {});
   c.hist = (c.hist || []).slice(-23);
   c.hist.push([now, LETTER[rating]]);
   if (!c.first) c.first = now;
   c.n = (c.n || 0) + 1;
   const fail = rating === 'unknown' || rating === 'wrong';
+  let keep = false;
 
   if (c.phase === 'new') {
     c.reps = 0;
@@ -64,6 +75,7 @@ export function schedule(card, rating, now) {
       c.pend = Math.max(1, Math.round(c.ivl * (total ? 0.1 : 0.25)));
       c.phase = 'learn'; c.step = 0; c.ivl = 0; c.due = now + STEPS[0] * MIN;
     } else if (early) {
+      keep = true;
       // 앞당겨 복습해서 맞힌 카드는 간격과 예정일을 그대로 둬요. 아직 잊을 때가 안 된 카드를 맞힌 것으로
       // 간격을 늘리면 실제보다 오래 기억하는 것처럼 계산되기 때문이에요. 기록만 남기고, 헷갈렸다면(비슷함) 난이도 계수만 조금 낮춰요.
       c.reps += 1;
@@ -86,6 +98,11 @@ export function schedule(card, rating, now) {
       c.due = dayDue(now, c.ivl);
     }
   }
+  const sc = opts.scale;
+  if (sc > 0 && sc < 1 && c.phase === 'review' && !keep && c.ivl > 0) {
+    const ivl = Math.max(1, Math.round(c.ivl * sc));
+    if (ivl !== c.ivl) { c.ivl = ivl; c.due = dayDue(now, ivl); }
+  }
   c.ease = Math.round(c.ease * 100) / 100;
   c.last = now;
   return c;
@@ -102,13 +119,15 @@ export function urgency(c, now) {
   return over + weak;
 }
 
-// 오늘 새 단어를 몇 개 더 보여 줄지. 하루 목표(perDay)에서 이미 본 만큼을 빼고,
-// 하루 시작 때 밀린 복습(backlog)이 많으면 부담이 쌓이지 않게 자동으로 줄여요.
-export function newBudget(perDay, usedToday, backlog) {
-  const left = Math.max(0, perDay - usedToday);
-  if (backlog > perDay * 3) return 0;
-  if (backlog > perDay * 2) return Math.floor(left / 2);
-  return left;
+// 오늘 새 단어를 몇 개 더 보여 줄지. 하루 목표(perDay)와, '하루 복습 상한(cap)'에서 오늘 예정된 복습(backlog)을 뺀 여유 중 작은 쪽까지만 보여 줘요.
+// 새 단어 하나는 첫날에만 평균 2.5번쯤 복습 화면을 만들고, 이후 며칠도 복습을 늘려요. 그래서 여유 있게 NEW_COST(3.5)번으로 쳐요.
+// cap 이 0 이면 상한 없이 하루 목표만큼 보여 줘요. (시뮬레이션: 상한을 두면 하루 최대 복습이 크게 줄고, 160일 뒤 기억률은 같았어요)
+export const NEW_COST = 3.5;
+export const DEFAULT_CAP = 250;
+export const CAP_CHOICES = [150, 200, 250, 300, 0];   // 0 = 제한 없음
+export function newBudget(perDay, usedToday, backlog, cap = 0) {
+  const byLoad = cap > 0 ? Math.max(0, Math.floor((cap - backlog) / NEW_COST)) : Infinity;
+  return Math.max(0, Math.min(perDay, byLoad) - usedToday);
 }
 
 // 새 단어를 복습 사이사이에 고르게 섞어요. 복습 r장, 새 단어 n장이면 복습 ceil(r/n)장마다 새 단어 1장.

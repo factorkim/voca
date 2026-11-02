@@ -39,6 +39,8 @@ create table if not exists public.user_settings (
   direction    text not null default 'en2ko' check (direction in ('en2ko','ko2en','mix')),
   active_sets  text[],                                -- 공부할 단어장 id 목록. null 이면 전체
   shuffle_new  boolean not null default true,         -- 새 단어를 같은 Day 안에서 섞어서 보여 줄지 (false 면 단어장 순서 그대로)
+  interval_scale real not null default 0.85 check (interval_scale between 0.5 and 1),  -- 기억 강도: 복습 간격 배율 (1 표준 / 0.85 강화 / 0.7 최대)
+  daily_cap    integer not null default 250 check (daily_cap = 0 or daily_cap between 50 and 1000),  -- 하루 복습 상한. 오늘 예정된 복습이 많으면 새 단어를 줄여요 (0 = 제한 없음)
   consented_at timestamptz,                           -- 학습 기록 저장 안내에 동의한 시각
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
@@ -133,7 +135,10 @@ select
   (count(*) filter (where rating = 'right'))::int as r,
   (count(*) filter (where is_new))::int           as nw,
   (count(*) filter (where rating = 'unknown'))::int as u,
-  (count(*) filter (where rating = 'known'))::int   as k
+  (count(*) filter (where rating = 'known'))::int   as k,
+  (count(*) filter (where phase_before = 'review'))::int as rn,                                   -- 복습 단계에서 본 횟수
+  (count(*) filter (where phase_before = 'review' and rating in ('right','known')))::int as rk,  -- 그중 기억해 낸 횟수
+  (count(*) filter (where reveal_ms is not null and reveal_ms < 1000))::int as fn                -- 1초 안에 답을 확인한 횟수
 from public.review_log
 group by user_id, local_date;
 
