@@ -245,7 +245,7 @@ function viewLoadError() {
   return '<div class="state"><h2>불러오지 못했어요</h2><p>인터넷 연결을 확인하고 다시 시도해 주세요.</p><button class="btn primary" data-act="retry">다시 시도</button></div>';
 }
 function viewLogin() {
-  return '<section class="hello"><h1>단어 복습장</h1><p>맞힌 정도에 따라 복습 간격을 조절해서, 잊어버릴 때쯤 다시 보여 주는 영어 단어 암기 앱이에요.</p>' +
+  return '<section class="hello"><img class="mark" src="/icon.svg" alt="" width="52" height="52"><h1>단어 복습장</h1><p>맞힌 정도에 따라 복습 간격을 조절해서, 잊어버릴 때쯤 다시 보여 주는 영어 단어 암기 앱이에요.</p>' +
     '<ul class="points"><li>틀렸습니다 / 비슷합니다 / 맞았습니다를 직접 골라요</li><li>기기를 바꿔도 내 학습 기록이 이어져요</li><li>한 번 로그인하면 계속 유지돼요</li></ul>' +
     '<div class="loginbox"><label class="fld">아이디<input id="uid" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="영문 소문자, 숫자 3~20자"></label>' +
     '<label class="fld">비밀번호<input id="upw" type="password" autocomplete="current-password" placeholder="6자 이상"></label>' +
@@ -299,7 +299,9 @@ function viewStudy() {
   const s = ui.session; if (!s) return viewLoading();
   const now = Date.now();
   const left = s.mode === 'leech' ? (s.q.length + (ui.cur ? 1 : 0)) : counts(now).left;
-  const bar = '<div class="studybar"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button><span class="prog">오늘 ' + s.done + '장 · 남은 ' + left + '장</span></div>';
+  const pct = s.done + left ? Math.round(s.done / (s.done + left) * 100) : 100;
+  const bar = '<div class="studybar"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button><span class="prog">오늘 ' + s.done + '장 · 남은 ' + left + '장</span></div>' +
+    '<div class="track" role="progressbar" aria-label="이번 학습 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><i style="width:' + pct + '%"></i></div>';
   if (ui.waiting) {
     const c = CARDS.get(ui.waiting);
     return bar + '<div class="state"><h2>잠깐 쉬어 가요</h2><p>다음 카드는 ' + esc(fmtDue(c, now)) + '에 나와요.</p><button class="btn primary" data-act="now">지금 바로 보기</button></div>';
@@ -312,9 +314,10 @@ function viewStudy() {
   }
   const w = WORDS.get(ui.cur), c = CARDS.get(ui.cur) || blank(), e2k = ui.curDir === 'en2ko', b = bucket(c);
   const tags = '<div class="tags"><span class="tag">' + (b === 'new' ? '새 단어' : (b === 'learn' ? '학습 중' : '복습')) + '</span>' + ((c.lapses || 0) >= LEECH ? '<span class="tag warn">자주 틀림 · ' + c.lapses + '회</span>' : '') + '</div>';
-  let front = e2k ? '<h1 class="head">' + esc(w.en) + '</h1>' : '<h1 class="head-ko">' + esc(w.ko) + '</h1>';
+  let front = '<div class="front">' + (e2k ? '<h1 class="head">' + esc(w.en) + '</h1>' : '<h1 class="head-ko">' + esc(w.ko) + '</h1>');
   front += w.pos ? '<p class="pos">' + esc(w.pos) + '</p>' : '';
   if (e2k) front += speakBtn();
+  front += '</div>';
   let ans = '';
   if (ui.revealed) {
     ans = '<div class="answer">' + (e2k ? '<p class="ans-ko">' + esc(w.ko) + '</p>' : '<div><p class="ans-en">' + esc(w.en) + '</p>' + speakBtn() + '</div>');
@@ -324,7 +327,7 @@ function viewStudy() {
     if (w.ai) ans += '<p class="ai">예문과 유의어는 AI가 만들었어요.</p>';
     ans += '</div>';
   }
-  return bar + '<section class="card">' + tags + front + ans + '</section>';
+  return bar + '<section class="card' + (ui.revealed ? ' open' : '') + '">' + tags + front + ans + '</section>';
 }
 function viewDock() {
   if (ui.route !== 'study' || !ui.session || !ui.cur || ui.waiting) return '';
