@@ -80,10 +80,12 @@ async function boot() {
   if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('/sw.js').catch(() => {});
   render();
   if (!S.configured) { ui.stage = 'noconfig'; render(); return; }
-  S.onAuth((ev, user) => {
+  // Supabase 안내대로 콜백 안에서는 바로 다른 Supabase 호출을 하지 않고 한 박자 뒤로 미뤄요(잠금 대기 방지).
+  S.onAuth((ev, user) => setTimeout(() => {
     if (ev === 'SIGNED_OUT') { USER = null; resetData(); ui.stage = 'login'; render(); }
-    else if (user && (!USER || USER.id !== user.id)) { USER = user; startLoad(); }
-  });
+    else if (user && (!USER || USER.id !== user.id)) { USER = user; ui.loginMsg = ''; startLoad(); }
+    else if (user && USER && USER.id === user.id && !USER.email) USER = user;   // 오프라인으로 시작했다가 다시 연결되면 계정 정보를 채워요
+  }, 0));
   let user = null;
   try { user = await S.currentUser(); } catch (e) { /* 아래에서 처리 */ }
   if (!user) {
@@ -502,13 +504,16 @@ async function deleteMine() {
 }
 
 /* ---------- 아이디/비밀번호 로그인 ---------- */
+let authBusy = false;
 async function doAuth(isSignup) {
+  if (authBusy) return;   // 버튼을 여러 번 눌러도 한 번만 요청해요
   const id = S.normId(document.getElementById('uid').value);
   const pw = document.getElementById('upw').value;
   const say = (m) => { ui.loginMsg = m; const el = document.getElementById('loginmsg'); if (el) el.textContent = m; };
-  if (!S.validId(id)) return say('아이디는 영문 소문자, 숫자, . _ - 로 3~20자예요.');
+  if (!S.validId(id)) return say('아이디는 영문 소문자, 숫자, . _ - 로 3~20자예요. (점은 맨 앞·맨 뒤나 연달아 쓸 수 없어요)');
   if (pw.length < 6) return say('비밀번호는 6자 이상이어야 해요.');
   say(isSignup ? '가입하는 중이에요…' : '로그인하는 중이에요…');
+  authBusy = true;
   try {
     const r = isSignup ? await S.signUpId(id, pw) : await S.signInId(id, pw);
     if (r.error) {
@@ -521,6 +526,7 @@ async function doAuth(isSignup) {
     }
     if (isSignup && !r.data.session) say('가입은 됐지만 이메일 확인 설정이 켜져 있어요. README 2단계를 확인해 주세요.');
   } catch (e) { say('연결을 확인하고 다시 시도해 주세요.'); }
+  finally { authBusy = false; }
 }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target && (e.target.id === 'uid' || e.target.id === 'upw')) doAuth(false);

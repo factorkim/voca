@@ -18,7 +18,8 @@ export function onAuth(cb) { return sb.auth.onAuthStateChange((ev, sess) => cb(e
 // 아이디를 내부용 이메일 형태로 바꿔서 Supabase 이메일/비밀번호 로그인에 씀 (실제 메일은 발송되지 않아요)
 const DOMAIN = '@voca-user.com';
 export function normId(id) { return String(id || '').trim().toLowerCase(); }
-export function validId(id) { return /^[a-z0-9._-]{3,20}$/.test(id); }
+// 점(.)은 맨 앞/맨 뒤에 오거나 연달아 쓰면 이메일 형식이 깨져서 가입이 안 되므로 미리 막아요.
+export function validId(id) { return /^[a-z0-9._-]{3,20}$/.test(id) && !/^\.|\.$|\.\./.test(id); }
 export function displayId(email) { return email && email.endsWith(DOMAIN) ? email.slice(0, -DOMAIN.length) : (email || ''); }
 export function signInId(id, pw) { return sb.auth.signInWithPassword({ email: normId(id) + DOMAIN, password: pw }); }
 export function signUpId(id, pw) { return sb.auth.signUp({ email: normId(id) + DOMAIN, password: pw }); }
