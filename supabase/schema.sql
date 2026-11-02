@@ -38,6 +38,7 @@ create table if not exists public.user_settings (
   new_per_day  integer not null default 60 check (new_per_day between 0 and 200),
   direction    text not null default 'en2ko' check (direction in ('en2ko','ko2en','mix')),
   active_sets  text[],                                -- 공부할 단어장 id 목록. null 이면 전체
+  shuffle_new  boolean not null default true,         -- 새 단어를 같은 Day 안에서 섞어서 보여 줄지 (false 면 단어장 순서 그대로)
   consented_at timestamptz,                           -- 학습 기록 저장 안내에 동의한 시각
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()

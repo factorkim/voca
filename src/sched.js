@@ -151,6 +151,28 @@ export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId }) {
   return null;
 }
 
+// 같은 묶음(예: 같은 Day)에 속한 '연속된' 단어끼리만 섞어요. 묶음 순서와 묶음의 위치는 그대로 유지돼요.
+//  ids      : 단어 id 목록 (원래 순서)
+//  groupOf  : id -> 묶음 이름 (없으면 null/빈 값 → 그 단어는 섞지 않고 제자리에 둬요)
+//  seed     : 같은 seed 면 늘 같은 순서가 나와요 (앱을 다시 열어도 순서가 바뀌지 않게, 사용자별로 다르게)
+export function shuffleWithinGroups(ids, groupOf, seed) {
+  const hash = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+  const rng = (a) => () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const out = []; let i = 0;
+  while (i < ids.length) {
+    const g = groupOf(ids[i]); let j = i + 1;
+    if (g) while (j < ids.length && groupOf(ids[j]) === g) j++;
+    const run = ids.slice(i, j);
+    if (g && run.length > 1) {
+      const rand = rng(hash(seed + '|' + g));
+      for (let k = run.length - 1; k > 0; k--) { const m = Math.floor(rand() * (k + 1)); const tmp = run[k]; run[k] = run[m]; run[m] = tmp; }
+    }
+    for (const id of run) out.push(id);
+    i = j;
+  }
+  return out;
+}
+
 export function fmtDue(c, now) {
   const d = c.due - now;
   if (c.phase === 'learn' || d < 60 * MIN) return Math.max(1, Math.round(d / MIN)) + '분 후';

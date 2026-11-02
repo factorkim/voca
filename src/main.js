@@ -1,5 +1,5 @@
 import './style.css';
-import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext } from './sched.js';
+import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext, shuffleWithinGroups } from './sched.js';
 import * as S from './store.js';
 
 const APP_VERSION = '0.1.0';
@@ -14,11 +14,11 @@ const HLAB = { u: '몰', w: '틀', c: '비', r: '맞', k: '알' };
 const NEW_PER_DAY_DEFAULT = 60;
 const NEW_PER_DAY_CHOICES = [10, 20, 30, 40, 60, 80, 100, 150, 200];
 const emptyDay = () => ({ n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0 });
-const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, consentedAt: null });
+const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, shuffle: true, consentedAt: null });
 const BOOT_AT = Date.now();
 
 let USER = null;
-let WORDS = new Map(), ALL = [], ORDER = [], SETS = [], CARDS = new Map(), DAILY = new Map();   // ALL: 모든 단어, ORDER: 선택한 단어장의 단어
+let WORDS = new Map(), ALL = [], ORDER = [], STUDY = [], SETS = [], CARDS = new Map(), DAILY = new Map();   // ALL: 모든 단어, ORDER: 선택한 단어장의 단어
 let SET = defaultSettings();
 const ui = {
   route: 'home', stage: 'boot', offline: false, loadError: false,
@@ -38,7 +38,7 @@ function deviceInfo() {
 }
 
 /* ---------- 데이터 적용 / 캐시 ---------- */
-function resetData() { WORDS = new Map(); ALL = []; ORDER = []; SETS = []; CARDS = new Map(); DAILY = new Map(); SET = defaultSettings(); ui.session = null; ui.backlog = null; }
+function resetData() { WORDS = new Map(); ALL = []; ORDER = []; STUDY = []; SETS = []; CARDS = new Map(); DAILY = new Map(); SET = defaultSettings(); ui.session = null; ui.backlog = null; }
 // 선택한 단어장의 단어만 ORDER 에 담아요 (단어장 순서 → 단어 순서). 선택이 없으면(null) 전체예요.
 function activeSetIds() {
   if (!SETS.length) return null;
@@ -51,6 +51,11 @@ function rebuildOrder() {
   SETS.forEach((x, i) => { rank[x.id] = i; });
   ORDER = ALL.filter((id) => { const w = WORDS.get(id); return !act || !w.setId || act.has(w.setId); });
   ORDER = ORDER.map((id, i) => [id, i]).sort((a, b) => ((rank[WORDS.get(a[0]).setId] || 0) - (rank[WORDS.get(b[0]).setId] || 0)) || (a[1] - b[1])).map((x) => x[0]);
+  buildStudyOrder();
+}
+// 새 단어가 나오는 순서(STUDY). Day 안에서 섞기가 켜져 있으면 같은 Day의 단어끼리만 섞고, 순서는 계정마다 고정이에요. 단어 목록(ORDER)은 원래 순서 그대로예요.
+function buildStudyOrder() {
+  STUDY = SET.shuffle ? shuffleWithinGroups(ORDER, (id) => { const w = WORDS.get(id); return w && w.page ? w.setId + '|' + w.page : null; }, USER ? USER.id : 'anon') : ORDER.slice();
 }
 function setLabel() {
   const act = activeSetIds(); if (!act) return '';
@@ -73,19 +78,19 @@ function applyData(d) {
     dm.set(k, base);
   });
   DAILY = dm;
-  rebuildOrder();
-  ui.backlog = null;
   SET = defaultSettings();
   if (d.settings) SET = Object.assign(SET, d.settings);
   const ps = S.pendingSettings();
-  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
+  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, shuffle: ps.shuffle_new !== false, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
+  rebuildOrder();   // 저장된 설정(단어장 선택, 섞기)을 모두 읽은 뒤에 단어 순서를 만들어요
+  ui.backlog = null;
 }
 function persistCache() {
   if (!USER) return;
   S.writeCache(USER.id, { words: ALL.map((id) => WORDS.get(id)), sets: SETS, cards: Object.fromEntries(CARDS), daily: Object.fromEntries(DAILY), settings: SET });
 }
 function queueSettingsRow() {
-  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
+  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, shuffle_new: SET.shuffle, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
   scheduleFlush();
 }
 let flushTimer = 0;
@@ -202,7 +207,7 @@ function pick() {
     s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
   }
   // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
-  const r = chooseNext({ order: ORDER, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
+  const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
   if (!r) { s.finished = true; return; }
   ui.cur = r.id;
   if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
@@ -427,6 +432,7 @@ function viewBackup() {
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
+    '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<p class="muted small">복습이 많이 밀린 날에는 새 단어를 자동으로 줄여서 부담이 쌓이지 않게 해 드려요.</p></section>' + viewSets() +
     '<section class="block"><h2>내 기록 받기</h2><p class="muted">학습 기록은 내 계정에 저장돼요. 파일로도 받아 둘 수 있어요.</p>' +
     '<div class="btnrow"><button class="btn" data-act="exportJson">학습 상태 (JSON)</button><button class="btn" data-act="exportLog">복습 로그 (CSV)</button></div>' +
@@ -600,6 +606,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
+  else if (t.id === 'shuffleSel') { SET.shuffle = t.value === '1'; buildStudyOrder(); queueSettingsRow(); persistCache(); toast(SET.shuffle ? '새 단어를 Day 안에서 섞어서 보여 줄게요.' : '새 단어를 단어장 순서대로 보여 줄게요.'); }
   else if (t.id === 'imp' && t.files && t.files[0]) { importBackup(t.files[0]); t.value = ''; }
 });
 document.addEventListener('keydown', (e) => {

@@ -79,7 +79,7 @@ export async function loadAll(uid, sinceDate) {
     sets,
     cards: cardMap,
     daily: dailyMap,
-    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, consentedAt: ms(s.consented_at) || null } : null
+    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, shuffle: s.shuffle_new !== false, consentedAt: ms(s.consented_at) || null } : null
   };
 }
 
