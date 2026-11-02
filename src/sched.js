@@ -54,6 +54,7 @@ export function schedule(card, rating, now) {
       } else { c.due = now + STEPS[c.step] * MIN; }
     }
   } else {
+    const early = c.due > now;                             // 예정일보다 앞당겨 복습한 카드
     const late = Math.max(0, (now - c.due) / DAY);
     const base = c.ivl + Math.min(late, c.ivl) * 0.5;      // 늦게 맞힌 만큼 간격을 조금 더 줘요
     const pen = 1 / (1 + 0.12 * c.lapses);                 // 자주 틀린 단어는 간격을 덜 늘려요
@@ -62,6 +63,11 @@ export function schedule(card, rating, now) {
       c.lapses += 1; c.reps = 0; c.ease = Math.max(1.3, c.ease - (total ? 0.3 : 0.2));
       c.pend = Math.max(1, Math.round(c.ivl * (total ? 0.1 : 0.25)));
       c.phase = 'learn'; c.step = 0; c.ivl = 0; c.due = now + STEPS[0] * MIN;
+    } else if (early) {
+      // 앞당겨 복습해서 맞힌 카드는 간격과 예정일을 그대로 둬요. 아직 잊을 때가 안 된 카드를 맞힌 것으로
+      // 간격을 늘리면 실제보다 오래 기억하는 것처럼 계산되기 때문이에요. 기록만 남기고, 헷갈렸다면(비슷함) 난이도 계수만 조금 낮춰요.
+      c.reps += 1;
+      if (rating === 'close') c.ease = Math.max(1.3, c.ease - 0.05);
     } else if (rating === 'close') {
       c.ease = Math.max(1.3, c.ease - 0.05);
       c.ivl = Math.min(MAXIVL, Math.max(c.ivl + 1, Math.round(base * 1.2)));
@@ -111,6 +117,38 @@ export function shouldIntroduceNew(sinceNew, reviewsLeft, newLeft) {
   if (newLeft <= 0) return false;
   if (reviewsLeft <= 0) return true;
   return sinceNew >= Math.ceil(reviewsLeft / newLeft);
+}
+
+// 다음에 보여 줄 카드를 고르는 규칙. 화면과 무관한 순수 함수라서 단독으로 테스트할 수 있어요.
+//  order    : 공부할 단어 id 목록 (순서대로)
+//  cards    : id -> 카드 상태 (없거나 phase 가 'new' 면 새 단어)
+//  newLeft  : 오늘 더 보여 줄 새 단어 수(예산)    sinceNew : 마지막 새 단어 뒤에 푼 카드 수    lastId : 방금 푼 카드
+// 돌려주는 값: { id, kind } 또는 (볼 카드가 하나도 없을 때만) null.
+//  kind: learn(학습 중) / new / review  → 오늘의 할 일
+//        bonus-new / bonus-learn / bonus-review → 오늘 할 일을 모두 마친 뒤 멈추지 않고 이어가는 카드
+export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId }) {
+  const learn = [], rev = [], news = [], later = [], early = [];
+  for (const id of order) {
+    const c = cards.get(id);
+    if (!c || c.phase === 'new') { news.push(id); continue; }
+    if (c.due <= now) (c.phase === 'learn' ? learn : rev).push(id);
+    else (c.phase === 'learn' ? later : early).push(id);
+  }
+  const byDue = (a, b) => cards.get(a).due - cards.get(b).due;
+  learn.sort(byDue);
+  rev.sort((a, b) => urgency(cards.get(b), now) - urgency(cards.get(a), now));
+  const nl = Math.min(news.length, Math.max(0, newLeft));
+  // 오늘의 할 일: ① 학습 중 → ② 새 단어를 복습 사이에 섞기 → ③ 잊을 위험이 큰 복습
+  if (learn.length) return { id: learn[0], kind: 'learn' };
+  if (shouldIntroduceNew(sinceNew, rev.length, nl)) return { id: news[0], kind: 'new' };
+  if (rev.length) return { id: rev[0], kind: 'review' };
+  // 할 일을 모두 마쳐도 멈추지 않고 이어가요: ④ 다음 새 단어 → ⑤ 곧 볼 학습 카드 → ⑥ 가장 가까운 복습(앞당겨)
+  // 방금 푼 카드는 다른 카드가 있으면 뒤로 미뤄서 같은 카드가 바로 또 나오지 않게 해요.
+  if (news.length) return { id: news[0], kind: 'bonus-new' };
+  const first = (arr) => arr.find((id) => id !== lastId) || arr[0];
+  if (later.length) { later.sort(byDue); return { id: first(later), kind: 'bonus-learn' }; }
+  if (early.length) { early.sort(byDue); return { id: first(early), kind: 'bonus-review' }; }
+  return null;
 }
 
 export function fmtDue(c, now) {
