@@ -1,12 +1,13 @@
 // 데이터 계층: Supabase 연동 + 오프라인 보관함(outbox) + 로컬 캐시
 import { createClient } from '@supabase/supabase-js';
-import { LETTER, DEFAULT_CAP } from './sched.js';
+import { LETTER, DEFAULT_CAP, DEFAULT_SCALE } from './sched.js';
 
 const URL_ = import.meta.env.VITE_SUPABASE_URL;
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const configured = Boolean(URL_ && KEY);
 export const sb = configured ? createClient(URL_, KEY, { auth: { persistSession: true, autoRefreshToken: true } }) : null;
 
+export const FAST_MS = 1000;   // 이 시간 안에 답을 확인했으면 '빠른 확인'으로 세요
 const iso = (t) => (t ? new Date(t).toISOString() : null);
 const ms = (s) => (s ? Date.parse(s) : 0);
 
@@ -72,14 +73,14 @@ export async function loadAll(uid, sinceDate) {
   if (st.error) throw st.error;
   const sets = ws.error ? [] : ws.data.map(rowToSet);   // 단어장 표가 아직 없으면(마이그레이션 전) 전체를 한 묶음으로 봐요
   const cardMap = {}; cards.forEach((r) => { cardMap[r.word_id] = rowToCard(r); });
-  const dailyMap = {}; daily.forEach((r) => { dailyMap[r.local_date] = { n: r.n, w: r.w, c: r.c, r: r.r, u: r.u || 0, k: r.k || 0, nw: r.nw }; });
+  const dailyMap = {}; daily.forEach((r) => { dailyMap[r.local_date] = { n: r.n, w: r.w, c: r.c, r: r.r, u: r.u || 0, k: r.k || 0, nw: r.nw, rn: r.rn || 0, rk: r.rk || 0, fn: r.fn || 0 }; });
   const s = st.data;
   return {
     words: words.map(rowToWord),
     sets,
     cards: cardMap,
     daily: dailyMap,
-    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, shuffle: s.shuffle_new !== false, cap: Number.isFinite(s.daily_cap) ? s.daily_cap : DEFAULT_CAP, consentedAt: ms(s.consented_at) || null } : null
+    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, shuffle: s.shuffle_new !== false, cap: Number.isFinite(s.daily_cap) ? s.daily_cap : DEFAULT_CAP, scale: Number.isFinite(s.interval_scale) ? s.interval_scale : DEFAULT_SCALE, consentedAt: ms(s.consented_at) || null } : null
   };
 }
 
@@ -118,7 +119,7 @@ export function pendingCount() { return Object.keys(OUT.cards).length + OUT.logs
 export function pendingCardIds() { return Object.keys(OUT.cards); }
 export function pendingLogDates() {
   const m = {};
-  OUT.logs.forEach((l) => { const d = (m[l.local_date] = m[l.local_date] || { n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0 }); d.n++; d[LETTER[l.rating]]++; if (l.is_new) d.nw++; });
+  OUT.logs.forEach((l) => { const d = (m[l.local_date] = m[l.local_date] || { n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, rn: 0, rk: 0, fn: 0 }); d.n++; d[LETTER[l.rating]]++; if (l.is_new) d.nw++; if (l.phase_before === 'review') { d.rn++; if (l.rating === 'right' || l.rating === 'known') d.rk++; } if (l.reveal_ms != null && l.reveal_ms < FAST_MS) d.fn++; });
   return m;
 }
 export function pendingCards() { return OUT.cards; }

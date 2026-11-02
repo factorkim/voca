@@ -1,5 +1,5 @@
 import './style.css';
-import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext, shuffleWithinGroups, DEFAULT_CAP, CAP_CHOICES } from './sched.js';
+import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext, shuffleWithinGroups, DEFAULT_CAP, CAP_CHOICES, STRENGTH, DEFAULT_SCALE } from './sched.js';
 import * as S from './store.js';
 
 const APP_VERSION = '0.1.0';
@@ -13,8 +13,8 @@ const PHASE_LABEL = { new: '새 단어', learn: '학습 중', young: '익히는 
 const HLAB = { u: '몰', w: '틀', c: '비', r: '맞', k: '알' };
 const NEW_PER_DAY_DEFAULT = 60;
 const NEW_PER_DAY_CHOICES = [10, 20, 30, 40, 60, 80, 100, 150, 200];
-const emptyDay = () => ({ n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0 });
-const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, shuffle: true, cap: DEFAULT_CAP, consentedAt: null });
+const emptyDay = () => ({ n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, rn: 0, rk: 0, fn: 0 });
+const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, shuffle: true, cap: DEFAULT_CAP, scale: DEFAULT_SCALE, consentedAt: null });
 const BOOT_AT = Date.now();
 
 let USER = null;
@@ -81,7 +81,7 @@ function applyData(d) {
   SET = defaultSettings();
   if (d.settings) SET = Object.assign(SET, d.settings);
   const ps = S.pendingSettings();
-  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, shuffle: ps.shuffle_new !== false, cap: Number.isFinite(ps.daily_cap) ? ps.daily_cap : DEFAULT_CAP, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
+  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, shuffle: ps.shuffle_new !== false, cap: Number.isFinite(ps.daily_cap) ? ps.daily_cap : DEFAULT_CAP, scale: Number.isFinite(ps.interval_scale) ? ps.interval_scale : DEFAULT_SCALE, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
   rebuildOrder();   // 저장된 설정(단어장 선택, 섞기)을 모두 읽은 뒤에 단어 순서를 만들어요
   ui.backlog = null;
 }
@@ -90,7 +90,7 @@ function persistCache() {
   S.writeCache(USER.id, { words: ALL.map((id) => WORDS.get(id)), sets: SETS, cards: Object.fromEntries(CARDS), daily: Object.fromEntries(DAILY), settings: SET });
 }
 function queueSettingsRow() {
-  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, shuffle_new: SET.shuffle, daily_cap: SET.cap, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
+  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, shuffle_new: SET.shuffle, daily_cap: SET.cap, interval_scale: SET.scale, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
   scheduleFlush();
 }
 let flushTimer = 0;
@@ -226,7 +226,7 @@ function rate(r) {
   const t = Date.now(), perf = performance.now(), s = ui.session;
   const prev = CARDS.get(id), wasNew = !prev || prev.phase === 'new', p = prev || blank();
   const left = counts(t).left;
-  const next = schedule(prev, r, t);
+  const next = schedule(prev, r, t, { scale: SET.scale });
   CARDS.set(id, next);
   S.queueCard(USER.id, id, next);
 
@@ -250,7 +250,10 @@ function rate(r) {
     n_wrong: s.w, n_close: s.c, n_right: s.r, n_unknown: s.u, n_known: s.k, n_new: s.nw, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, device: deviceInfo(), app_version: APP_VERSION
   });
   const k = ymd(t), dd = Object.assign(emptyDay(), DAILY.get(k));
-  dd.n++; dd[LETTER[r]]++; if (wasNew) dd.nw++; DAILY.set(k, dd);
+  dd.n++; dd[LETTER[r]]++; if (wasNew) dd.nw++;
+  if (p.phase === 'review') { dd.rn++; if (r === 'right' || r === 'known') dd.rk++; }
+  if (ui.shownAt && ui.revealedAt && ui.revealedAt - ui.shownAt < S.FAST_MS) dd.fn++;
+  DAILY.set(k, dd);
 
   scheduleFlush();
   pick(); render();
@@ -364,7 +367,7 @@ function viewDock() {
   if (ui.route !== 'study' || !ui.session || !ui.cur) return '';
   if (!ui.revealed) return '<button class="btn primary block" data-act="reveal">정답 보기</button><p class="keys">스페이스 키로도 볼 수 있어요</p>';
   const now = Date.now(), c = CARDS.get(ui.cur) || blank();
-  return '<div class="rates" role="group" aria-label="얼마나 알았는지 골라요">' + RATINGS.map((d) => '<button class="rate ' + d.key + '" data-act="rate" data-r="' + d.key + '"><span class="rl">' + d.label + '</span><span class="rv">' + esc(fmtDue(schedule(c, d.key, now), now)) + '</span></button>').join('') + '</div><p class="keys">키보드 1 · 2 · 3 · 4 · 5</p>';
+  return '<div class="rates" role="group" aria-label="얼마나 알았는지 골라요">' + RATINGS.map((d) => '<button class="rate ' + d.key + '" data-act="rate" data-r="' + d.key + '"><span class="rl">' + d.label + '</span><span class="rv">' + esc(fmtDue(schedule(c, d.key, now, { scale: SET.scale }), now)) + '</span></button>').join('') + '</div><p class="keys">키보드 1 · 2 · 3 · 4 · 5</p>';
 }
 
 function matchWord(id) {
@@ -404,6 +407,21 @@ function stackCol(d, max) {
     (n ? '<div class="stack" style="height:' + px + 'px"><i class="s-k" style="flex:' + (l.k || 0) + '"></i><i class="s-r" style="flex:' + (l.r || 0) + '"></i><i class="s-c" style="flex:' + (l.c || 0) + '"></i><i class="s-w" style="flex:' + (l.w || 0) + '"></i><i class="s-u" style="flex:' + (l.u || 0) + '"></i></div>' : '<div class="stack nil"></div>') +
     '<span class="l">' + d.dow + '</span></div>';
 }
+function memoryCheck(days) {
+  let rn = 0, rk = 0, n = 0, fn = 0;
+  days.forEach((d) => { rn += d.l.rn || 0; rk += d.l.rk || 0; n += d.l.n || 0; fn += d.l.fn || 0; });
+  let tip;
+  if (rn < 30) tip = '복습한 단어가 아직 적어서 판단하기 일러요. 조금 더 모이면 알려 드릴게요.';
+  else {
+    const p = rk / rn;
+    tip = p < 0.85 ? '복습에서 잊는 단어가 꽤 있어요. 설정에서 기억 강도를 한 단계 높여 보세요.'
+      : p > 0.97 ? '거의 다 기억하고 있어요. 복습이 부담되면 기억 강도를 한 단계 낮춰도 괜찮아요.' : '기억이 잘 유지되고 있어요. 지금 설정이 잘 맞아요.';
+  }
+  return '<section class="block"><div class="block-h"><h2>기억 점검</h2><span class="muted">최근 14일</span></div><dl class="kv">' +
+    '<dt>복습에서 기억해 낸 비율</dt><dd>' + (rn ? Math.round(rk / rn * 100) + '% (' + rk + '/' + rn + ')' : '–') + '</dd>' +
+    '<dt>바로 떠오른 비율 (1초 안에 확인)</dt><dd>' + (n ? Math.round(fn / n * 100) + '%' : '–') + '</dd></dl>' +
+    '<p class="muted small">\'맞았음·알고 있음\'을 고른 비율이에요. 스스로 매긴 점수라, 헷갈릴 땐 솔직하게 \'비슷함\'을 골라야 정확해요. ' + tip + '</p></section>';
+}
 function viewStats() {
   const now = Date.now(), c = counts(now), days = lastDays(14, now);
   let max = 1; days.forEach((d) => { if ((d.l.n || 0) > max) max = d.l.n; });
@@ -417,6 +435,7 @@ function viewStats() {
   h += '<section class="block"><div class="block-h"><h2>앞으로 7일 복습 예정</h2><span class="muted">장</span></div>' +
     '<div class="chart" role="img" aria-label="앞으로 7일 복습 예정 막대 그래프">' + f.map((v, i) => { const px = v ? Math.max(4, Math.round(v / fmax * 100)) : 0; return '<div class="col"><span class="v">' + (v || '') + '</span>' + (v ? '<div class="stack one" style="height:' + px + 'px"></div>' : '<div class="stack nil"></div>') + '<span class="l">' + fl[i] + '</span></div>'; }).join('') + '</div></section>';
   h += '<section class="block"><div class="block-h"><h2>익힌 정도</h2></div>' + masteryBar(c) + '</section>';
+  h += memoryCheck(days);
   h += '<section class="block"><h2>요약</h2><dl class="kv"><dt>누적 학습 횟수</dt><dd>' + total + '회</dd><dt>연속 학습</dt><dd>' + streak(now) + '일</dd><dt>최근 7일 학습</dt><dd>' + wn + '장</dd><dt>최근 7일 정답률</dt><dd>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</dd><dt>최근 7일 틀림·몰랐음</dt><dd>' + ww + '회</dd><dt>자주 틀리는 단어</dt><dd>' + c.leech.length + '개</dd></dl></section>';
   return h;
 }
@@ -442,6 +461,8 @@ function viewBackup() {
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
+    '<label class="field" for="scaleSel"><span>기억 강도</span><select id="scaleSel">' + STRENGTH.map((x) => '<option value="' + x.scale + '"' + (Math.abs(SET.scale - x.scale) < 0.01 ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
+    '<p class="muted small">복습 간격을 얼마나 촘촘하게 할지 정해요. <b>강화</b>는 표준보다 복습이 약 9% 늘고, 잊어버리는 단어가 절반쯤으로 줄어요. <b>최대</b>는 복습이 약 18% 늘어요. (모의 실험 기준이라, 아래 \'기억 점검\'에서 내 실제 기억률을 확인해 보세요.)</p>' +
     '<p class="muted small">오늘 예정된 복습이 많으면, 하루 복습이 이 정도를 넘지 않게 새 단어를 자동으로 줄여요. 예정된 복습은 줄이지 않고, 새 단어를 천천히 넣어도 기억률은 거의 같아요.</p></section>' + viewSets() +
     '<section class="block"><h2>내 기록 받기</h2><p class="muted">학습 기록은 내 계정에 저장돼요. 파일로도 받아 둘 수 있어요.</p>' +
     '<div class="btnrow"><button class="btn" data-act="exportJson">학습 상태 (JSON)</button><button class="btn" data-act="exportLog">복습 로그 (CSV)</button></div>' +
@@ -615,6 +636,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
+  else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
   else if (t.id === 'shuffleSel') { SET.shuffle = t.value === '1'; buildStudyOrder(); queueSettingsRow(); persistCache(); toast(SET.shuffle ? '새 단어를 Day 안에서 섞어서 보여 줄게요.' : '새 단어를 단어장 순서대로 보여 줄게요.'); }
   else if (t.id === 'imp' && t.files && t.files[0]) { importBackup(t.files[0]); t.value = ''; }
