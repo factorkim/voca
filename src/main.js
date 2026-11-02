@@ -1,5 +1,5 @@
 import './style.css';
-import { MIN, DAY, LEECH, startOfDay, blank, schedule, fmtDue } from './sched.js';
+import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, urgency, newBudget, shouldIntroduceNew } from './sched.js';
 import * as S from './store.js';
 
 const APP_VERSION = '0.1.0';
@@ -10,15 +10,19 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xx
 const ROUTES = ['home', 'study', 'words', 'stats', 'backup'];
 const DIRS = { en2ko: '영어 → 한국어', ko2en: '한국어 → 영어', mix: '섞어서' };
 const PHASE_LABEL = { new: '새 단어', learn: '학습 중', young: '익히는 중', mature: '익숙함' };
-const HLAB = { w: '틀', c: '비', r: '맞' };
+const HLAB = { u: '몰', w: '틀', c: '비', r: '맞', k: '알' };
+const NEW_PER_DAY_DEFAULT = 60;
+const NEW_PER_DAY_CHOICES = [10, 20, 30, 40, 60, 80, 100, 150, 200];
+const emptyDay = () => ({ n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0 });
+const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, consentedAt: null });
 const BOOT_AT = Date.now();
 
 let USER = null;
-let WORDS = new Map(), ORDER = [], CARDS = new Map(), DAILY = new Map();
-let SET = { newPerDay: 10, dir: 'en2ko', consentedAt: null };
+let WORDS = new Map(), ALL = [], ORDER = [], SETS = [], CARDS = new Map(), DAILY = new Map();   // ALL: 모든 단어, ORDER: 선택한 단어장의 단어
+let SET = defaultSettings();
 const ui = {
   route: 'home', stage: 'boot', offline: false, loadError: false,
-  session: null, revealed: false, cur: null, curDir: 'en2ko', waiting: null,
+  session: null, backlog: null, revealed: false, cur: null, curDir: 'en2ko', waiting: null,
   filter: 'all', q: '', nextMode: 'daily', confirmDelete: false,
   shownAt: 0, revealedAt: 0, hidden: false, speaks: 0
 };
@@ -26,7 +30,7 @@ const ui = {
 /* ---------- 날짜 도우미 ---------- */
 function ymd(ts) { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function dayKey(off, now) { const d = new Date(now); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + off); return ymd(d.getTime()); }
-function todayLog(now) { return Object.assign({ n: 0, w: 0, c: 0, r: 0, nw: 0 }, DAILY.get(ymd(now)) || {}); }
+function todayLog(now) { return Object.assign(emptyDay(), DAILY.get(ymd(now)) || {}); }
 function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 3200); }
 function isStandalone() { return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; }
 function deviceInfo() {
@@ -34,10 +38,29 @@ function deviceInfo() {
 }
 
 /* ---------- 데이터 적용 / 캐시 ---------- */
-function resetData() { WORDS = new Map(); ORDER = []; CARDS = new Map(); DAILY = new Map(); SET = { newPerDay: 10, dir: 'en2ko', consentedAt: null }; ui.session = null; }
+function resetData() { WORDS = new Map(); ALL = []; ORDER = []; SETS = []; CARDS = new Map(); DAILY = new Map(); SET = defaultSettings(); ui.session = null; ui.backlog = null; }
+// 선택한 단어장의 단어만 ORDER 에 담아요 (단어장 순서 → 단어 순서). 선택이 없으면(null) 전체예요.
+function activeSetIds() {
+  if (!SETS.length) return null;
+  const ids = SETS.map((x) => x.id);
+  const pick = SET.sets ? SET.sets.filter((id) => ids.indexOf(id) >= 0) : ids;
+  return new Set(pick.length ? pick : ids);
+}
+function rebuildOrder() {
+  const act = activeSetIds(), rank = {};
+  SETS.forEach((x, i) => { rank[x.id] = i; });
+  ORDER = ALL.filter((id) => { const w = WORDS.get(id); return !act || !w.setId || act.has(w.setId); });
+  ORDER = ORDER.map((id, i) => [id, i]).sort((a, b) => ((rank[WORDS.get(a[0]).setId] || 0) - (rank[WORDS.get(b[0]).setId] || 0)) || (a[1] - b[1])).map((x) => x[0]);
+}
+function setLabel() {
+  const act = activeSetIds(); if (!act) return '';
+  const names = SETS.filter((x) => act.has(x.id)).map((x) => x.name);
+  return names.length <= 2 ? names.join(', ') : names.length + '개 단어장';
+}
 function applyData(d) {
   WORDS = new Map(d.words.map((w) => [w.id, w]));
-  ORDER = d.words.map((w) => w.id);
+  ALL = d.words.map((w) => w.id);
+  SETS = d.sets || [];
   const m = new Map(Object.entries(d.cards || {}));
   const po = S.pendingCards();
   Object.keys(po).forEach((k) => m.set(k, S.rowToCard(po[k])));   // 아직 서버에 못 보낸 내 기록이 항상 최신이에요
@@ -45,21 +68,24 @@ function applyData(d) {
   const dm = new Map(Object.entries(d.daily || {}));
   const pl = S.pendingLogDates();
   Object.keys(pl).forEach((k) => {
-    const base = Object.assign({ n: 0, w: 0, c: 0, r: 0, nw: 0 }, dm.get(k) || {});
-    ['n', 'w', 'c', 'r', 'nw'].forEach((f) => { base[f] += pl[k][f]; });
+    const base = Object.assign(emptyDay(), dm.get(k) || {});
+    ['n', 'w', 'c', 'r', 'u', 'k', 'nw'].forEach((f) => { base[f] += pl[k][f]; });
     dm.set(k, base);
   });
   DAILY = dm;
-  if (d.settings) SET = Object.assign({ consentedAt: null }, d.settings);
+  rebuildOrder();
+  ui.backlog = null;
+  SET = defaultSettings();
+  if (d.settings) SET = Object.assign(SET, d.settings);
   const ps = S.pendingSettings();
-  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
+  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
 }
 function persistCache() {
   if (!USER) return;
-  S.writeCache(USER.id, { words: ORDER.map((id) => WORDS.get(id)), cards: Object.fromEntries(CARDS), daily: Object.fromEntries(DAILY), settings: SET });
+  S.writeCache(USER.id, { words: ALL.map((id) => WORDS.get(id)), sets: SETS, cards: Object.fromEntries(CARDS), daily: Object.fromEntries(DAILY), settings: SET });
 }
 function queueSettingsRow() {
-  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
+  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
   scheduleFlush();
 }
 let flushTimer = 0;
@@ -125,9 +151,11 @@ function counts(now) {
     if ((c.lapses || 0) >= LEECH) leech.push(id);
   });
   leech.sort((a, b) => CARDS.get(b).lapses - CARDS.get(a).lapses);
-  const used = todayLog(now).nw || 0;
-  const newAvail = Math.min(n.new, Math.max(0, SET.newPerDay - used));
-  return { n, dueReview, dueLearn, soon, leech, newAvail, total: ORDER.length, left: dueReview + dueLearn + newAvail };
+  const used = todayLog(now).nw || 0, day = ymd(now);
+  if (!ui.backlog || ui.backlog.day !== day) ui.backlog = { day, n: dueReview + dueLearn };   // 하루 시작 때의 밀린 양 (하루 동안 고정)
+  const want = Math.max(0, SET.newPerDay - used), budget = newBudget(SET.newPerDay, used, ui.backlog.n);
+  const newAvail = Math.min(n.new, budget);
+  return { n, dueReview, dueLearn, soon, leech, newAvail, throttled: budget < want && n.new > newAvail, total: ORDER.length, left: dueReview + dueLearn + newAvail };
 }
 function streak(now) {
   let off = (DAILY.get(dayKey(0, now)) || {}).n ? 0 : -1, s = 0;
@@ -146,7 +174,7 @@ function lastDays(n, now) {
   const a = [];
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date(now); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
-    a.push({ l: DAILY.get(ymd(d.getTime())) || { n: 0, w: 0, c: 0, r: 0 }, dow: i === 0 ? '오늘' : '일월화수목금토'.charAt(d.getDay()) });
+    a.push({ l: DAILY.get(ymd(d.getTime())) || emptyDay(), dow: i === 0 ? '오늘' : '일월화수목금토'.charAt(d.getDay()) });
   }
   return a;
 }
@@ -159,7 +187,7 @@ function nextInfo(now) {
 /* ---------- 학습 세션 ---------- */
 function byDue(a, b) { return CARDS.get(a).due - CARDS.get(b).due; }
 function startSession(mode) {
-  ui.session = { id: uuid(), mode: mode || 'daily', startedAt: Date.now(), done: 0, w: 0, c: 0, r: 0, nw: 0, q: null, finished: false, forced: false };
+  ui.session = { id: uuid(), mode: mode || 'daily', startedAt: Date.now(), done: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, sinceNew: 0, q: null, finished: false, forced: false };
   if (ui.session.mode === 'leech') ui.session.q = counts(Date.now()).leech.slice();
   pick();
 }
@@ -181,11 +209,13 @@ function pick() {
     if (c.due <= now) { (c.phase === 'learn' ? learn : rev).push(id); }
     else if (c.phase === 'learn' && c.due - now <= 30 * MIN) { if (!wait || c.due < CARDS.get(wait).due) wait = id; }
   });
-  learn.sort(byDue); rev.sort(byDue);
-  const limit = Math.max(0, SET.newPerDay - (todayLog(now).nw || 0));
+  // 추천 순서: ① 학습 중(몇 분 단위) 카드 → ② 새 단어를 복습 사이사이에 고르게 섞기 → ③ 가장 잊기 쉬운 복습 카드부터
+  learn.sort(byDue);
+  rev.sort((a, b) => urgency(CARDS.get(b), now) - urgency(CARDS.get(a), now));
+  const newLeft = Math.min(news.length, counts(now).newAvail);
   if (learn.length) { ui.cur = learn[0]; return; }
+  if (shouldIntroduceNew(s.sinceNew, rev.length, newLeft)) { ui.cur = news[0]; return; }
   if (rev.length) { ui.cur = rev[0]; return; }
-  if (news.length && limit > 0) { ui.cur = news[0]; return; }
   if (wait) { if (s.forced) { ui.cur = wait; s.forced = false; } else ui.waiting = wait; return; }
   s.finished = true;
 }
@@ -213,13 +243,13 @@ function rate(r) {
     device: deviceInfo(), app_version: APP_VERSION
   });
 
-  s.done++; s[r.charAt(0)]++; if (wasNew) s.nw++;
+  s.done++; s[LETTER[r]]++; if (wasNew) { s.nw++; s.sinceNew = 0; } else s.sinceNew++;
   S.queueSession({
     id: s.id, user_id: USER.id, started_at: iso(s.startedAt), last_activity_at: iso(t), mode: s.mode, cards_done: s.done,
-    n_wrong: s.w, n_close: s.c, n_right: s.r, n_new: s.nw, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, device: deviceInfo(), app_version: APP_VERSION
+    n_wrong: s.w, n_close: s.c, n_right: s.r, n_unknown: s.u, n_known: s.k, n_new: s.nw, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, device: deviceInfo(), app_version: APP_VERSION
   });
-  const k = ymd(t), dd = Object.assign({ n: 0, w: 0, c: 0, r: 0, nw: 0 }, DAILY.get(k));
-  dd.n++; dd[r.charAt(0)]++; if (wasNew) dd.nw++; DAILY.set(k, dd);
+  const k = ymd(t), dd = Object.assign(emptyDay(), DAILY.get(k));
+  dd.n++; dd[LETTER[r]]++; if (wasNew) dd.nw++; DAILY.set(k, dd);
 
   scheduleFlush();
   pick(); render();
@@ -235,6 +265,8 @@ function speak(text) {
 
 /* ---------- 화면 ---------- */
 const SPEAKER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+function ipaHtml(w) { const v = w && w.ipa ? String(w.ipa).replace(/^\/+|\/+$/g, '') : ''; return v ? '<p class="ipa" lang="en-fonipa">/' + esc(v) + '/</p>' : ''; }
+const good = (l) => (l.r || 0) + (l.k || 0);   // 정답으로 치는 평가: 맞았음 + 알고 있음
 function speakBtn() { return ('speechSynthesis' in window) ? '<button class="speak" data-act="speak" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button>' : ''; }
 
 function viewLoading() { return '<div class="state"><div class="spin" aria-hidden="true"></div><p>단어와 학습 기록을 불러오는 중이에요.</p></div>'; }
@@ -277,15 +309,16 @@ function masteryBar(c) {
 
 function viewHome() {
   const now = Date.now(), c = counts(now), t = todayLog(now);
-  const week = lastDays(7, now); let wn = 0, wr = 0; week.forEach((d) => { wn += d.l.n || 0; wr += d.l.r || 0; });
+  const week = lastDays(7, now); let wn = 0, wr = 0; week.forEach((d) => { wn += d.l.n || 0; wr += good(d.l); });
   const can = c.left > 0 || c.soon > 0;
-  const info = c.left > 0 ? '' : (c.soon > 0 ? '곧 볼 카드가 ' + c.soon + '개 있어요.' : (nextInfo(now) || '오늘 분량을 모두 마쳤어요.'));
+  const throttleNote = c.throttled ? '복습이 많이 밀려 있어서 오늘 새 단어는 ' + c.newAvail + '개로 줄였어요. 복습을 먼저 끝내면 부담이 덜해요.' : '';
+  const info = c.left > 0 ? throttleNote : (c.soon > 0 ? '곧 볼 카드가 ' + c.soon + '개 있어요.' : (nextInfo(now) || '오늘 분량을 모두 마쳤어요.'));
   let h = '<section class="hero"><p class="eyebrow">오늘 남은 카드</p><p class="big">' + c.left + '</p>' +
     '<dl class="trio"><div><dt>복습</dt><dd>' + c.dueReview + '</dd></div><div><dt>학습 중</dt><dd>' + c.dueLearn + '</dd></div><div><dt>새 단어</dt><dd>' + c.newAvail + '</dd></div></dl>' +
     '<button class="btn primary block" data-act="start"' + (can ? '' : ' disabled') + '>' + (c.left > 0 ? '학습 시작' : (c.soon > 0 ? '곧 볼 카드 시작' : '오늘은 끝났어요')) + '</button>' +
     (info ? '<p class="after">' + esc(info) + '</p>' : '') + '</section>';
   h += '<div class="strip"><div><b>' + streak(now) + '일</b><span>연속 학습</span></div><div><b>' + (t.n || 0) + '장</b><span>오늘 학습</span></div><div><b>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</b><span>최근 7일 정답률</span></div></div>';
-  h += '<section class="block"><div class="block-h"><h2>익힌 정도</h2><span class="muted">단어 ' + c.total + '개</span></div>' + masteryBar(c) + '</section>';
+  h += '<section class="block"><div class="block-h"><h2>익힌 정도</h2><span class="muted">' + (setLabel() ? esc(setLabel()) + ' · ' : '') + '단어 ' + c.total + '개</span></div>' + masteryBar(c) + '</section>';
   if (c.leech.length) {
     h += '<section class="block"><div class="block-h"><h2>자주 틀리는 단어</h2><span class="muted">' + c.leech.length + '개</span></div><ul class="mini">' +
       c.leech.slice(0, 5).map((id) => { const w = WORDS.get(id); return '<li><span class="serif">' + esc(w.en) + '</span><span class="k">' + esc(w.ko) + '</span><span class="n">틀림 ' + CARDS.get(id).lapses + '</span></li>'; }).join('') +
@@ -307,20 +340,20 @@ function viewStudy() {
     return bar + '<div class="state"><h2>잠깐 쉬어 가요</h2><p>다음 카드는 ' + esc(fmtDue(c, now)) + '에 나와요.</p><button class="btn primary" data-act="now">지금 바로 보기</button></div>';
   }
   if (!ui.cur) {
-    const tot = s.w + s.c + s.r;
+    const tot = s.u + s.w + s.c + s.r + s.k;
     return bar + '<div class="state"><h2>' + (tot ? '수고했어요' : '지금 볼 카드가 없어요') + '</h2>' +
-      (tot ? '<p>' + tot + '장을 학습했어요. 정답률 ' + Math.round(s.r / tot * 100) + '%</p><div class="sum"><div class="w"><b>' + s.w + '</b><span>틀렸습니다</span></div><div class="c"><b>' + s.c + '</b><span>비슷합니다</span></div><div class="r"><b>' + s.r + '</b><span>맞았습니다</span></div></div>' : '<p>' + (nextInfo(now) || '새 카드가 생기면 다시 알려 드릴게요.') + '</p>') +
+      (tot ? '<p>' + tot + '장을 학습했어요. 정답률 ' + Math.round((s.r + s.k) / tot * 100) + '%</p><div class="sum">' + RATINGS.map((x) => '<div class="' + x.letter + '"><b>' + s[x.letter] + '</b><span>' + x.label + '</span></div>').join('') + '</div>' : '<p>' + (nextInfo(now) || '새 카드가 생기면 다시 알려 드릴게요.') + '</p>') +
       '<button class="btn primary block" data-act="go" data-r="home" style="margin-top:8px">홈으로</button></div>';
   }
   const w = WORDS.get(ui.cur), c = CARDS.get(ui.cur) || blank(), e2k = ui.curDir === 'en2ko', b = bucket(c);
   const tags = '<div class="tags"><span class="tag">' + (b === 'new' ? '새 단어' : (b === 'learn' ? '학습 중' : '복습')) + '</span>' + ((c.lapses || 0) >= LEECH ? '<span class="tag warn">자주 틀림 · ' + c.lapses + '회</span>' : '') + '</div>';
   let front = '<div class="front">' + (e2k ? '<h1 class="head">' + esc(w.en) + '</h1>' : '<h1 class="head-ko">' + esc(w.ko) + '</h1>');
   front += w.pos ? '<p class="pos">' + esc(w.pos) + '</p>' : '';
-  if (e2k) front += speakBtn();
+  if (e2k) front += ipaHtml(w) + speakBtn();
   front += '</div>';
   let ans = '';
   if (ui.revealed) {
-    ans = '<div class="answer">' + (e2k ? '<p class="ans-ko">' + esc(w.ko) + '</p>' : '<div><p class="ans-en">' + esc(w.en) + '</p>' + speakBtn() + '</div>');
+    ans = '<div class="answer">' + (e2k ? '<p class="ans-ko">' + esc(w.ko) + '</p>' : '<div class="en-row"><div><p class="ans-en">' + esc(w.en) + '</p>' + ipaHtml(w) + '</div>' + speakBtn() + '</div>');
     if (w.ex) ans += '<div><p class="ex">' + esc(w.ex) + '</p>' + (w.exKo ? '<p class="ex-ko">' + esc(w.exKo) + '</p>' : '') + '</div>';
     if (w.syn && w.syn.length) ans += '<ul class="syn">' + w.syn.map((x) => '<li><b>' + esc(x.w) + '</b><span>' + esc(x.n || '') + '</span></li>').join('') + '</ul>';
     if (c.hist && c.hist.length) ans += '<div class="hist"><span>최근 기록</span>' + c.hist.slice(-8).map((x) => '<i class="' + esc(x[1]) + '">' + esc(HLAB[x[1]] || '') + '</i>').join('') + '</div>';
@@ -333,8 +366,7 @@ function viewDock() {
   if (ui.route !== 'study' || !ui.session || !ui.cur || ui.waiting) return '';
   if (!ui.revealed) return '<button class="btn primary block" data-act="reveal">정답 보기</button><p class="keys">스페이스 키로도 볼 수 있어요</p>';
   const now = Date.now(), c = CARDS.get(ui.cur) || blank();
-  const defs = [['wrong', '틀렸습니다'], ['close', '비슷합니다'], ['right', '맞았습니다']];
-  return '<div class="rates">' + defs.map((d) => '<button class="rate ' + d[0] + '" data-act="rate" data-r="' + d[0] + '"><span class="rl">' + d[1] + '</span><span class="rv">' + esc(fmtDue(schedule(c, d[0], now), now)) + '</span></button>').join('') + '</div><p class="keys">키보드 1 · 2 · 3</p>';
+  return '<div class="rates" role="group" aria-label="얼마나 알았는지 골라요">' + RATINGS.map((d) => '<button class="rate ' + d.key + '" data-act="rate" data-r="' + d.key + '"><span class="rl">' + d.label + '</span><span class="rv">' + esc(fmtDue(schedule(c, d.key, now), now)) + '</span></button>').join('') + '</div><p class="keys">키보드 1 · 2 · 3 · 4 · 5</p>';
 }
 
 function matchWord(id) {
@@ -355,7 +387,7 @@ function wordRows() {
     const facts = (c && c.phase !== 'new')
       ? '<span>다음 복습 ' + esc(fmtDue(c, now)) + '</span><span>간격 ' + (c.ivl || 0) + '일</span><span>난이도 계수 ' + (c.ease || 2.3) + '</span><span>틀린 횟수 ' + (c.lapses || 0) + '</span><span>복습 ' + (c.n || 0) + '회</span>'
       : '<span>아직 학습 전이에요</span>';
-    return '<details class="row"><summary><span class="r-en serif">' + esc(w.en) + '</span><span class="pill ' + b + '">' + PHASE_LABEL[b] + '</span><span class="r-ko">' + (w.pos ? esc(w.pos) + ' · ' : '') + esc(w.ko) + '</span></summary><div class="r-body">' +
+    return '<details class="row"><summary><span class="r-en serif">' + esc(w.en) + '</span><span class="pill ' + b + '">' + PHASE_LABEL[b] + '</span><span class="r-ko">' + (w.pos ? esc(w.pos) + ' · ' : '') + esc(w.ko) + '</span></summary><div class="r-body">' + ipaHtml(w) +
       (w.ex ? '<div><p class="ex">' + esc(w.ex) + '</p>' + (w.exKo ? '<p class="ex-ko">' + esc(w.exKo) + '</p>' : '') + '</div>' : '') +
       (w.syn && w.syn.length ? '<ul class="syn">' + w.syn.map((x) => '<li><b>' + esc(x.w) + '</b><span>' + esc(x.n || '') + '</span></li>').join('') + '</ul>' : '') +
       '<div class="facts">' + facts + '</div>' + (w.ai ? '<p class="ai">예문과 유의어는 AI가 만들었어요.</p>' : '') + '</div></details>';
@@ -371,7 +403,7 @@ function viewWords() {
 function stackCol(d, max) {
   const l = d.l, n = l.n || 0, px = n ? Math.max(4, Math.round(n / max * 100)) : 0;
   return '<div class="col"><span class="v">' + (n || '') + '</span>' +
-    (n ? '<div class="stack" style="height:' + px + 'px"><i class="s-r" style="flex:' + (l.r || 0) + '"></i><i class="s-c" style="flex:' + (l.c || 0) + '"></i><i class="s-w" style="flex:' + (l.w || 0) + '"></i></div>' : '<div class="stack nil"></div>') +
+    (n ? '<div class="stack" style="height:' + px + 'px"><i class="s-k" style="flex:' + (l.k || 0) + '"></i><i class="s-r" style="flex:' + (l.r || 0) + '"></i><i class="s-c" style="flex:' + (l.c || 0) + '"></i><i class="s-w" style="flex:' + (l.w || 0) + '"></i><i class="s-u" style="flex:' + (l.u || 0) + '"></i></div>' : '<div class="stack nil"></div>') +
     '<span class="l">' + d.dow + '</span></div>';
 }
 function viewStats() {
@@ -379,26 +411,38 @@ function viewStats() {
   let max = 1; days.forEach((d) => { if ((d.l.n || 0) > max) max = d.l.n; });
   const f = forecast(now); let fmax = 1; f.forEach((v) => { if (v > fmax) fmax = v; });
   const fl = f.map((_, i) => (i === 0 ? '오늘' : i === 1 ? '내일' : '일월화수목금토'.charAt(new Date(now + i * DAY).getDay())));
-  let wn = 0, ww = 0, wr = 0; days.slice(7).forEach((d) => { wn += d.l.n || 0; ww += d.l.w || 0; wr += d.l.r || 0; });
+  let wn = 0, ww = 0, wr = 0; days.slice(7).forEach((d) => { wn += d.l.n || 0; ww += (d.l.w || 0) + (d.l.u || 0); wr += good(d.l); });
   let total = 0; DAILY.forEach((l) => { total += l.n || 0; });
   let h = '<section class="block" style="margin-top:0"><div class="block-h"><h2>최근 14일 학습량</h2><span class="muted">장</span></div>' +
     '<div class="chart" role="img" aria-label="최근 14일 하루 학습량 막대 그래프">' + days.map((d) => stackCol(d, max)).join('') + '</div>' +
-    '<ul class="legend"><li><i style="background:var(--mk-r)"></i>맞았습니다</li><li><i style="background:var(--mk-c)"></i>비슷합니다</li><li><i style="background:var(--mk-w)"></i>틀렸습니다</li></ul></section>';
+    '<ul class="legend"><li><i style="background:var(--mk-k)"></i>알고 있음</li><li><i style="background:var(--mk-r)"></i>맞았음</li><li><i style="background:var(--mk-c)"></i>비슷함</li><li><i style="background:var(--mk-w)"></i>틀림</li><li><i style="background:var(--mk-u)"></i>몰랐음</li></ul></section>';
   h += '<section class="block"><div class="block-h"><h2>앞으로 7일 복습 예정</h2><span class="muted">장</span></div>' +
     '<div class="chart" role="img" aria-label="앞으로 7일 복습 예정 막대 그래프">' + f.map((v, i) => { const px = v ? Math.max(4, Math.round(v / fmax * 100)) : 0; return '<div class="col"><span class="v">' + (v || '') + '</span>' + (v ? '<div class="stack one" style="height:' + px + 'px"></div>' : '<div class="stack nil"></div>') + '<span class="l">' + fl[i] + '</span></div>'; }).join('') + '</div></section>';
   h += '<section class="block"><div class="block-h"><h2>익힌 정도</h2></div>' + masteryBar(c) + '</section>';
-  h += '<section class="block"><h2>요약</h2><dl class="kv"><dt>누적 학습 횟수</dt><dd>' + total + '회</dd><dt>연속 학습</dt><dd>' + streak(now) + '일</dd><dt>최근 7일 학습</dt><dd>' + wn + '장</dd><dt>최근 7일 정답률</dt><dd>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</dd><dt>최근 7일 틀린 횟수</dt><dd>' + ww + '회</dd><dt>자주 틀리는 단어</dt><dd>' + c.leech.length + '개</dd></dl></section>';
+  h += '<section class="block"><h2>요약</h2><dl class="kv"><dt>누적 학습 횟수</dt><dd>' + total + '회</dd><dt>연속 학습</dt><dd>' + streak(now) + '일</dd><dt>최근 7일 학습</dt><dd>' + wn + '장</dd><dt>최근 7일 정답률</dt><dd>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</dd><dt>최근 7일 틀림·몰랐음</dt><dd>' + ww + '회</dd><dt>자주 틀리는 단어</dt><dd>' + c.leech.length + '개</dd></dl></section>';
   return h;
 }
+function viewSets() {
+  if (SETS.length < 1) return '';
+  const act = activeSetIds();
+  return '<section class="block"><h2>단어장 선택</h2><p class="muted">공부할 단어장을 골라요. 여러 개를 함께 고를 수 있고, 단어장을 바꿔도 학습 기록은 그대로 남아요.</p><ul class="sets">' +
+    SETS.map((x) => {
+      let total = 0, done = 0;
+      ALL.forEach((id) => { if (WORDS.get(id).setId === x.id) { total++; const c = CARDS.get(id); if (c && c.phase !== 'new') done++; } });
+      return '<li><label class="setrow"><input type="checkbox" class="setchk" data-set="' + esc(x.id) + '"' + (act && act.has(x.id) ? ' checked' : '') + '><span class="sname">' + esc(x.name) + (x.desc ? '<small>' + esc(x.desc) + '</small>' : '') + '</span><span class="scount">익힌 ' + done + ' / ' + total + '</span></label></li>';
+    }).join('') + '</ul></section>';
+}
 function viewBackup() {
-  const np = [5, 10, 15, 20, 30, 50].map((n) => '<option value="' + n + '"' + (SET.newPerDay === n ? ' selected' : '') + '>' + n + '개</option>').join('');
+  const npList = NEW_PER_DAY_CHOICES.indexOf(SET.newPerDay) >= 0 ? NEW_PER_DAY_CHOICES : NEW_PER_DAY_CHOICES.concat(SET.newPerDay).sort((a, b) => a - b);
+  const np = npList.map((n) => '<option value="' + n + '"' + (SET.newPerDay === n ? ' selected' : '') + '>' + n + '개</option>').join('');
   const dr = Object.keys(DIRS).map((k) => '<option value="' + k + '"' + (SET.dir === k ? ' selected' : '') + '>' + DIRS[k] + '</option>').join('');
   const del = ui.confirmDelete
     ? '<p class="muted">복습 기록, 단어별 학습 상태, 학습 세션 기록이 모두 지워지고 되돌릴 수 없어요. 먼저 파일로 받아 두는 것을 권해요.</p><div class="btnrow"><button class="btn danger" data-act="deleteYes">모두 삭제하기</button><button class="btn" data-act="deleteNo">취소</button></div>'
     : '<button class="btn danger" data-act="deleteAsk">내 학습 기록 삭제</button>';
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
-    '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label></section>' +
+    '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
+    '<p class="muted small">복습이 많이 밀린 날에는 새 단어를 자동으로 줄여서 부담이 쌓이지 않게 해 드려요.</p></section>' + viewSets() +
     '<section class="block"><h2>내 기록 받기</h2><p class="muted">학습 기록은 내 계정에 저장돼요. 파일로도 받아 둘 수 있어요.</p>' +
     '<div class="btnrow"><button class="btn" data-act="exportJson">학습 상태 (JSON)</button><button class="btn" data-act="exportLog">복습 로그 (CSV)</button></div>' +
     '<div class="btnrow"><button class="btn" data-act="exportCsv">단어 목록 (CSV)</button><label class="btn" for="imp">이전 백업 가져오기</label></div>' +
@@ -463,8 +507,8 @@ function exportJson() {
   toast('학습 상태 파일을 저장했어요.');
 }
 function exportWords() {
-  const rows = [['id', 'en', 'ko', 'pos', 'example', 'example_ko', 'synonyms']];
-  ORDER.forEach((id) => { const w = WORDS.get(id); rows.push([id, w.en, w.ko, w.pos, w.ex, w.exKo, (w.syn || []).map((s) => s.w).join('; ')]); });
+  const rows = [['id', 'en', 'ipa', 'ko', 'pos', 'example', 'example_ko', 'synonyms']];
+  ORDER.forEach((id) => { const w = WORDS.get(id); rows.push([id, w.en, w.ipa, w.ko, w.pos, w.ex, w.exKo, (w.syn || []).map((s) => s.w).join('; ')]); });
   saveFile('voca-words-' + ymd(Date.now()) + '.csv', toCsv(rows), 'text/csv');
 }
 async function exportLog() {
@@ -482,7 +526,7 @@ function cleanCard(c) {
   if (['new', 'learn', 'review'].indexOf(c.phase) >= 0) o.phase = c.phase;
   ['ease', 'ivl', 'step', 'reps', 'lapses', 'pend', 'due', 'last', 'first', 'n'].forEach((k) => { if (typeof c[k] === 'number' && isFinite(c[k])) o[k] = c[k]; });
   o.ease = Math.min(3, Math.max(1.3, o.ease));
-  o.hist = Array.isArray(c.hist) ? c.hist.filter((x) => Array.isArray(x) && typeof x[0] === 'number' && /^[wcr]$/.test(x[1])).slice(-24) : [];
+  o.hist = Array.isArray(c.hist) ? c.hist.filter((x) => Array.isArray(x) && typeof x[0] === 'number' && /^[wcrku]$/.test(x[1])).slice(-24) : [];
   return o;
 }
 async function importBackup(file) {
@@ -565,6 +609,12 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'newPerDay') { SET.newPerDay = +t.value; queueSettingsRow(); toast('하루 새 단어 수를 바꿨어요.'); }
+  else if (t.classList && t.classList.contains('setchk')) {
+    const checked = Array.prototype.map.call(document.querySelectorAll('.setchk:checked'), (el) => el.getAttribute('data-set'));
+    if (!checked.length) { t.checked = true; toast('단어장을 하나 이상 골라 주세요.'); return; }
+    SET.sets = checked.length === SETS.length ? null : checked;   // 전부 고르면 '전체'로 두어, 나중에 추가되는 단어장도 자동으로 포함돼요
+    rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
+  }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
   else if (t.id === 'imp' && t.files && t.files[0]) { importBackup(t.files[0]); t.value = ''; }
 });
@@ -573,7 +623,7 @@ document.addEventListener('keydown', (e) => {
   const t = e.target, tag = t && t.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (!ui.revealed) { if ((e.key === ' ' || e.key === 'Enter') && tag !== 'BUTTON') { e.preventDefault(); reveal(); } }
-  else { const m = { '1': 'wrong', '2': 'close', '3': 'right' }; if (m[e.key]) { e.preventDefault(); rate(m[e.key]); } }
+  else { const m = { '1': 'unknown', '2': 'wrong', '3': 'close', '4': 'right', '5': 'known' }; if (m[e.key]) { e.preventDefault(); rate(m[e.key]); } }
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { ui.hidden = true; persistCache(); return; }

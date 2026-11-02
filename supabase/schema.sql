@@ -2,13 +2,25 @@
 -- 단어 복습장 데이터베이스 스키마
 -- Supabase 대시보드 > SQL Editor 에 통째로 붙여넣고 Run 하세요.
 -- 여러 번 실행해도 안전해요.
+-- ※ 이미 예전 버전으로 만들어 둔 DB라면 이 파일 대신 supabase/migrations 폴더의 SQL을 실행하세요.
 -- ============================================================
+
+-- 0) 단어장(단어 묶음). 학습자는 설정 화면에서 공부할 단어장을 골라요. 추가는 관리자가 SQL로 해요.
+create table if not exists public.word_sets (
+  id           text primary key,                      -- 예: 'toeic', 'suneung'
+  name         text not null,                         -- 화면에 보이는 이름
+  description  text,
+  ord          integer not null default 0,            -- 목록 순서
+  created_at   timestamptz not null default now()
+);
 
 -- 1) 단어 (모든 사용자가 같이 읽어요. 수정은 관리자만 SQL/Table editor로 해요)
 create table if not exists public.words (
   id           text primary key,
+  set_id       text not null references public.word_sets(id) on delete cascade,
   ord          integer not null default 0,
   en           text not null,
+  ipa          text,                                  -- 발음기호 (슬래시 없이, 예: əˈbændən)
   ko           text not null,
   pos          text,
   example      text,
@@ -23,8 +35,9 @@ create table if not exists public.words (
 -- 2) 사용자 설정
 create table if not exists public.user_settings (
   user_id      uuid primary key references auth.users(id) on delete cascade,
-  new_per_day  integer not null default 10 check (new_per_day between 0 and 200),
+  new_per_day  integer not null default 60 check (new_per_day between 0 and 200),
   direction    text not null default 'en2ko' check (direction in ('en2ko','ko2en','mix')),
+  active_sets  text[],                                -- 공부할 단어장 id 목록. null 이면 전체
   consented_at timestamptz,                           -- 학습 기록 저장 안내에 동의한 시각
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
@@ -61,7 +74,7 @@ create table if not exists public.review_log (
   local_date     text not null,                       -- 사용자 기준 날짜 YYYY-MM-DD
   local_hour     smallint not null,                   -- 사용자 기준 시각(0-23)
   tz             text,
-  rating         text not null check (rating in ('wrong','close','right')),
+  rating         text not null check (rating in ('unknown','wrong','close','right','known')),   -- 몰랐음/틀림/비슷함/맞았음/알고 있음
   direction      text not null check (direction in ('en2ko','ko2en')),
   mode           text not null default 'daily',       -- daily | leech
   is_new         boolean not null,                    -- 처음 본 단어였는지
@@ -96,9 +109,11 @@ create table if not exists public.study_sessions (
   last_activity_at timestamptz not null,
   mode             text not null default 'daily',
   cards_done       integer not null default 0,
+  n_unknown        integer not null default 0,
   n_wrong          integer not null default 0,
   n_close          integer not null default 0,
   n_right          integer not null default 0,
+  n_known          integer not null default 0,
   n_new            integer not null default 0,
   tz               text,
   device           jsonb,
@@ -115,18 +130,25 @@ select
   (count(*) filter (where rating = 'wrong'))::int as w,
   (count(*) filter (where rating = 'close'))::int as c,
   (count(*) filter (where rating = 'right'))::int as r,
-  (count(*) filter (where is_new))::int           as nw
+  (count(*) filter (where is_new))::int           as nw,
+  (count(*) filter (where rating = 'unknown'))::int as u,
+  (count(*) filter (where rating = 'known'))::int   as k
 from public.review_log
 group by user_id, local_date;
 
 -- ------------------------------------------------------------
 -- 접근 권한 (Row Level Security): 각자 자기 기록만 볼 수 있어요.
 -- ------------------------------------------------------------
+alter table public.word_sets      enable row level security;
 alter table public.words          enable row level security;
 alter table public.user_settings  enable row level security;
 alter table public.card_state     enable row level security;
 alter table public.review_log     enable row level security;
 alter table public.study_sessions enable row level security;
+
+drop policy if exists "word_sets readable by signed-in users" on public.word_sets;
+create policy "word_sets readable by signed-in users" on public.word_sets
+  for select to authenticated using (true);
 
 drop policy if exists "words readable by signed-in users" on public.words;
 create policy "words readable by signed-in users" on public.words
