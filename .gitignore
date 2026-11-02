@@ -1,0 +1,13 @@
+# 의존성과 빌드 결과물
+node_modules/
+dist/
+
+# 환경 변수 (실제 값은 절대 올리지 않아요. .env.example 만 올려요)
+.env
+.env.*
+!.env.example
+
+# 기타
+.DS_Store
+*.log
+.vercel
