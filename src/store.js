@@ -1,6 +1,6 @@
 // 데이터 계층: Supabase 연동 + 오프라인 보관함(outbox) + 로컬 캐시
 import { createClient } from '@supabase/supabase-js';
-import { LETTER } from './sched.js';
+import { LETTER, DEFAULT_CAP } from './sched.js';
 
 const URL_ = import.meta.env.VITE_SUPABASE_URL;
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -79,7 +79,7 @@ export async function loadAll(uid, sinceDate) {
     sets,
     cards: cardMap,
     daily: dailyMap,
-    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, shuffle: s.shuffle_new !== false, consentedAt: ms(s.consented_at) || null } : null
+    settings: s ? { newPerDay: s.new_per_day, dir: s.direction, sets: Array.isArray(s.active_sets) ? s.active_sets : null, shuffle: s.shuffle_new !== false, cap: Number.isFinite(s.daily_cap) ? s.daily_cap : DEFAULT_CAP, consentedAt: ms(s.consented_at) || null } : null
   };
 }
 

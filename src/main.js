@@ -1,5 +1,5 @@
 import './style.css';
-import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext, shuffleWithinGroups } from './sched.js';
+import { MIN, DAY, LEECH, RATINGS, LETTER, startOfDay, blank, schedule, fmtDue, newBudget, chooseNext, shuffleWithinGroups, DEFAULT_CAP, CAP_CHOICES } from './sched.js';
 import * as S from './store.js';
 
 const APP_VERSION = '0.1.0';
@@ -14,7 +14,7 @@ const HLAB = { u: '몰', w: '틀', c: '비', r: '맞', k: '알' };
 const NEW_PER_DAY_DEFAULT = 60;
 const NEW_PER_DAY_CHOICES = [10, 20, 30, 40, 60, 80, 100, 150, 200];
 const emptyDay = () => ({ n: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0 });
-const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, shuffle: true, consentedAt: null });
+const defaultSettings = () => ({ newPerDay: NEW_PER_DAY_DEFAULT, dir: 'en2ko', sets: null, shuffle: true, cap: DEFAULT_CAP, consentedAt: null });
 const BOOT_AT = Date.now();
 
 let USER = null;
@@ -81,7 +81,7 @@ function applyData(d) {
   SET = defaultSettings();
   if (d.settings) SET = Object.assign(SET, d.settings);
   const ps = S.pendingSettings();
-  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, shuffle: ps.shuffle_new !== false, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
+  if (ps) SET = { newPerDay: ps.new_per_day, dir: ps.direction, sets: Array.isArray(ps.active_sets) ? ps.active_sets : null, shuffle: ps.shuffle_new !== false, cap: Number.isFinite(ps.daily_cap) ? ps.daily_cap : DEFAULT_CAP, consentedAt: ps.consented_at ? Date.parse(ps.consented_at) : null };
   rebuildOrder();   // 저장된 설정(단어장 선택, 섞기)을 모두 읽은 뒤에 단어 순서를 만들어요
   ui.backlog = null;
 }
@@ -90,7 +90,7 @@ function persistCache() {
   S.writeCache(USER.id, { words: ALL.map((id) => WORDS.get(id)), sets: SETS, cards: Object.fromEntries(CARDS), daily: Object.fromEntries(DAILY), settings: SET });
 }
 function queueSettingsRow() {
-  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, shuffle_new: SET.shuffle, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
+  S.queueSettings({ user_id: USER.id, new_per_day: SET.newPerDay, direction: SET.dir, active_sets: SET.sets, shuffle_new: SET.shuffle, daily_cap: SET.cap, consented_at: SET.consentedAt ? new Date(SET.consentedAt).toISOString() : null, updated_at: new Date().toISOString() });
   scheduleFlush();
 }
 let flushTimer = 0;
@@ -146,6 +146,13 @@ async function startLoad() {
 
 /* ---------- 계산 ---------- */
 function bucket(c) { if (!c || c.phase === 'new') return 'new'; if (c.phase === 'learn') return 'learn'; return c.ivl >= 21 ? 'mature' : 'young'; }
+// 그날 처음 센 '예정된 복습 수'를 기기에 저장해 둬요. 복습을 하다가 앱을 다시 열어도 새 단어 수가 다시 늘어나지 않게 하려는 거예요.
+function dayBacklog(day, current) {
+  const key = 'voca.backlog.' + (USER ? USER.id : '');
+  try { const o = JSON.parse(localStorage.getItem(key) || 'null'); if (o && o.day === day && Number.isFinite(o.n)) return o.n; } catch (e) { /* 무시 */ }
+  try { localStorage.setItem(key, JSON.stringify({ day, n: current })); } catch (e) { /* 무시 */ }
+  return current;
+}
 function counts(now) {
   const n = { new: 0, learn: 0, young: 0, mature: 0 }; let dueReview = 0, dueLearn = 0, soon = 0; const leech = [];
   ORDER.forEach((id) => {
@@ -157,8 +164,9 @@ function counts(now) {
   });
   leech.sort((a, b) => CARDS.get(b).lapses - CARDS.get(a).lapses);
   const used = todayLog(now).nw || 0, day = ymd(now);
-  if (!ui.backlog || ui.backlog.day !== day) ui.backlog = { day, n: dueReview + dueLearn };   // 하루 시작 때의 밀린 양 (하루 동안 고정)
-  const want = Math.max(0, SET.newPerDay - used), budget = newBudget(SET.newPerDay, used, ui.backlog.n);
+  if ((!ui.backlog || ui.backlog.day !== day) && ORDER.length) ui.backlog = { day, n: dayBacklog(day, dueReview + dueLearn) };   // 하루 시작 때의 예정된 복습 수 (하루 동안 고정)
+  const base = ui.backlog ? ui.backlog.n : dueReview + dueLearn;
+  const want = Math.max(0, SET.newPerDay - used), budget = newBudget(SET.newPerDay, used, base, SET.cap);
   const newAvail = Math.min(n.new, budget);
   return { n, dueReview, dueLearn, soon, leech, newAvail, throttled: budget < want && n.new > newAvail, total: ORDER.length, left: dueReview + dueLearn + newAvail };
 }
@@ -304,7 +312,7 @@ function viewHome() {
   const now = Date.now(), c = counts(now), t = todayLog(now);
   const week = lastDays(7, now); let wn = 0, wr = 0; week.forEach((d) => { wn += d.l.n || 0; wr += good(d.l); });
   const can = ORDER.length > 0;   // 오늘 목표를 채워도 이어서 더 할 수 있어요
-  const throttleNote = c.throttled ? '복습이 많이 밀려 있어서 오늘 새 단어는 ' + c.newAvail + '개로 줄였어요. 복습을 먼저 끝내면 부담이 덜해요.' : '';
+  const throttleNote = c.throttled ? '오늘은 예정된 복습이 많아서 새 단어를 ' + c.newAvail + '개로 줄였어요. (하루 복습 상한 ' + SET.cap + '번 기준) 복습부터 끝내면 내일 더 넣을 수 있어요.' : '';
   const info = c.left > 0 ? throttleNote : ('오늘 목표를 모두 채웠어요!' + (nextInfo(now) ? ' ' + nextInfo(now) + '.' : '') + ' 더 하고 싶다면 이어서 계속할 수 있어요.');
   let h = '<section class="hero"><p class="eyebrow">오늘 남은 카드</p><p class="big">' + c.left + '</p>' +
     '<dl class="trio"><div><dt>복습</dt><dd>' + c.dueReview + '</dd></div><div><dt>학습 중</dt><dd>' + c.dueLearn + '</dd></div><div><dt>새 단어</dt><dd>' + c.newAvail + '</dd></div></dl>' +
@@ -433,7 +441,8 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
-    '<p class="muted small">복습이 많이 밀린 날에는 새 단어를 자동으로 줄여서 부담이 쌓이지 않게 해 드려요.</p></section>' + viewSets() +
+    '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
+    '<p class="muted small">오늘 예정된 복습이 많으면, 하루 복습이 이 정도를 넘지 않게 새 단어를 자동으로 줄여요. 예정된 복습은 줄이지 않고, 새 단어를 천천히 넣어도 기억률은 거의 같아요.</p></section>' + viewSets() +
     '<section class="block"><h2>내 기록 받기</h2><p class="muted">학습 기록은 내 계정에 저장돼요. 파일로도 받아 둘 수 있어요.</p>' +
     '<div class="btnrow"><button class="btn" data-act="exportJson">학습 상태 (JSON)</button><button class="btn" data-act="exportLog">복습 로그 (CSV)</button></div>' +
     '<div class="btnrow"><button class="btn" data-act="exportCsv">단어 목록 (CSV)</button><label class="btn" for="imp">이전 백업 가져오기</label></div>' +
@@ -606,6 +615,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
+  else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
   else if (t.id === 'shuffleSel') { SET.shuffle = t.value === '1'; buildStudyOrder(); queueSettingsRow(); persistCache(); toast(SET.shuffle ? '새 단어를 Day 안에서 섞어서 보여 줄게요.' : '새 단어를 단어장 순서대로 보여 줄게요.'); }
   else if (t.id === 'imp' && t.files && t.files[0]) { importBackup(t.files[0]); t.value = ''; }
 });
