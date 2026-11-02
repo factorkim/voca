@@ -218,9 +218,10 @@ function pick() {
   const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
   if (!r) { s.finished = true; return; }
   ui.cur = r.id;
+  if (ui.curDir === 'en2ko') autoSpeak(r.id);
   if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
-function reveal() { if (ui.cur && !ui.revealed) { ui.revealed = true; ui.revealedAt = performance.now(); render(); } }
+function reveal() { if (ui.cur && !ui.revealed) { ui.revealed = true; ui.revealedAt = performance.now(); if (ui.curDir === 'ko2en') autoSpeak(ui.cur); render(); } }
 function rate(r) {
   const id = ui.cur; if (!id || !ui.revealed || !ui.session) return;
   const t = Date.now(), perf = performance.now(), s = ui.session;
@@ -258,20 +259,44 @@ function rate(r) {
   scheduleFlush();
   pick(); render();
 }
+// 발음 재생. 앞부분이 잘리지 않도록: (1) 첫 재생 전에 소리 없는 문장으로 음성 엔진을 깨워 두고, (2) 재생 중일 때만 cancel 하고 잠깐 기다렸다가 재생하며,
+// (3) 영어(미국) 목소리를 직접 고르고, (4) 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
+let speakTimer = 0, warmed = false, curUtter = null, enVoice = null;
+const canSpeak = () => 'speechSynthesis' in window;
+function pickVoice() {
+  try { const v = window.speechSynthesis.getVoices(); enVoice = v.find((x) => x.lang === 'en-US' && x.localService) || v.find((x) => x.lang === 'en-US') || v.find((x) => /^en/i.test(x.lang)) || null; } catch (e) { /* 무시 */ }
+}
+if (canSpeak()) { pickVoice(); try { window.speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* 무시 */ } }
+function warmUp() {
+  if (warmed || !canSpeak()) return; warmed = true;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'en-US'; window.speechSynthesis.speak(u); } catch (e) { /* 무시 */ }
+}
 function speak(text) {
   try {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9;
-    window.speechSynthesis.speak(u);
+    if (!canSpeak()) return;
+    warmUp();
+    clearTimeout(speakTimer);
+    if (curUtter) window.speechSynthesis.cancel();   // 지금 읽는 중일 때만 끊어요 (깨워 둔 엔진을 취소하지 않게)
+    speakTimer = setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9; if (enVoice) u.voice = enVoice;
+      curUtter = u; u.onend = u.onerror = () => { if (curUtter === u) curUtter = null; };
+      window.speechSynthesis.speak(u);
+    }, 120);
   } catch (e) { /* 무시 */ }
+}
+// 새 단어가 처음 나올 때 자동으로 발음을 들려줘요. 기기마다 설정에서 끌 수 있어요.
+const autoOn = () => { try { return localStorage.getItem('voca.autospeak') !== '0'; } catch (e) { return true; } };
+function autoSpeak(id) {
+  if (!autoOn() || !canSpeak()) return;
+  const w = WORDS.get(id), c = CARDS.get(id);
+  if (w && (!c || c.phase === 'new')) speak(w.en);
 }
 
 /* ---------- 화면 ---------- */
 const SPEAKER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 function ipaHtml(w) { const v = w && w.ipa ? String(w.ipa).replace(/^\/+|\/+$/g, '') : ''; return v ? '<p class="ipa" lang="en-fonipa">/' + esc(v) + '/</p>' : ''; }
 const good = (l) => (l.r || 0) + (l.k || 0);   // 정답으로 치는 평가: 맞았음 + 알고 있음
-function speakBtn() { return ('speechSynthesis' in window) ? '<button class="speak" data-act="speak" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button>' : ''; }
+function speakBtn() { return canSpeak() ? '<button class="speak" data-act="speak" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button>' : ''; }
 
 function viewLoading() { return '<div class="state"><div class="spin" aria-hidden="true"></div><p>단어와 학습 기록을 불러오는 중이에요.</p></div>'; }
 function viewNoConfig() {
@@ -459,6 +484,7 @@ function viewBackup() {
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
+    (canSpeak() ? '<label class="field" for="autoSel"><span>새 단어 자동 발음</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
     '<label class="field" for="scaleSel"><span>기억 강도</span><select id="scaleSel">' + STRENGTH.map((x) => '<option value="' + x.scale + '"' + (Math.abs(SET.scale - x.scale) < 0.01 ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
@@ -605,7 +631,7 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.getAttribute('data-act');
   if (a === 'go') go(b.getAttribute('data-r'));
-  else if (a === 'start') go('study', 'daily');
+  else if (a === 'start') { warmUp(); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'reveal') reveal();
   else if (a === 'rate') rate(b.getAttribute('data-r'));
@@ -636,6 +662,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
+  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
   else if (t.id === 'shuffleSel') { SET.shuffle = t.value === '1'; buildStudyOrder(); queueSettingsRow(); persistCache(); toast(SET.shuffle ? '새 단어를 Day 안에서 섞어서 보여 줄게요.' : '새 단어를 단어장 순서대로 보여 줄게요.'); }
