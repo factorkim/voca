@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>단어 복습장</title>
+  <meta name="description" content="맞힌 정도에 따라 복습 간격을 조절해 주는 영어 단어 암기 앱">
+  <meta name="theme-color" content="#EDF0F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0E1220" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="단어장">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;700&display=swap">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <span class="brand">단어 복습장</span>
+      <span class="top-right"><span id="sync" class="sync" hidden></span><span class="date" id="date"></span></span>
+    </header>
+    <main id="app"></main>
+  </div>
+  <nav id="nav" class="bar" aria-label="메뉴"><div class="tabs">
+    <button class="tab" data-act="go" data-r="home">오늘</button>
+    <button class="tab" data-act="go" data-r="words">단어</button>
+    <button class="tab" data-act="go" data-r="stats">통계</button>
+    <button class="tab" data-act="go" data-r="backup">설정</button>
+  </div></nav>
+  <div id="dock" class="bar" hidden><div id="dockin"></div></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

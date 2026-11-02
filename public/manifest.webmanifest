@@ -1,0 +1,17 @@
+{
+  "name": "단어 복습장",
+  "short_name": "단어장",
+  "description": "맞힌 정도에 따라 복습 간격을 조절해 주는 영어 단어 암기 앱",
+  "lang": "ko",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EDF0F6",
+  "theme_color": "#3346D3",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
