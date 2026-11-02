@@ -283,6 +283,43 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
   .row summary:hover{background:var(--sunk)}
   .btnrow .btn:not(.danger):hover{border-color:var(--line-strong)}
 }
+/* 가로 화면(낮은 높이): 탭 바와 버튼을 낮추고, 정답을 펼치면 카드를 좌우로 나눠 세로 스크롤을 줄여요 */
+@media (orientation:landscape) and (max-height:520px){
+  body{padding-top:calc(6px + env(safe-area-inset-top,0px));padding-bottom:calc(60px + env(safe-area-inset-bottom,0px))}
+  body.is-study{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  body.no-nav{padding-bottom:calc(20px + env(safe-area-inset-bottom,0px))}
+  .wrap{max-width:760px}
+  .top{padding:0 2px 8px}
+  .bar{padding-top:5px;padding-bottom:calc(5px + env(safe-area-inset-bottom,0px))}
+  .tab{flex-direction:row;justify-content:center;gap:6px;padding:5px 4px;font-size:13px}
+  .tab svg{width:30px;height:24px;padding:0 4px}
+  .tab[aria-current="page"] svg{background:none}
+  .tab[aria-current="page"]{background:var(--accent-soft)}
+  .btn{min-height:44px}
+  .hero{padding:14px 18px}
+  .big{font-size:clamp(56px,20vh,84px);margin:2px 0 8px}
+  .trio{margin-bottom:10px}.trio>div{padding:6px 12px}.trio dd{font-size:19px}
+  .block{padding:14px 16px}
+  .studybar{margin-bottom:4px}.studybar .btn{min-height:34px}
+  .track{margin-bottom:8px}
+  .card{min-height:0;padding:12px 18px 14px}
+  .card .front{padding:4px 0 0}
+  .head{font-size:clamp(38px,13vh,56px);margin-bottom:0}
+  .head-ko{font-size:clamp(24px,8vh,30px)}
+  .pos{font-size:17px}.ipa{font-size:15px}
+  .speak{width:34px;height:34px;margin-top:6px}
+  .card.open{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);column-gap:22px;align-content:start}
+  .card.open .tags{grid-column:1;grid-row:1}
+  .card.open .front{grid-column:1;grid-row:2;align-items:flex-start;text-align:left;justify-content:flex-start;padding-top:6px}
+  .card.open .answer{grid-column:2;grid-row:1 / span 2;margin-top:0;padding:0 0 0 22px;border-top:0;border-left:1px solid var(--line);gap:10px}
+  .ans-ko{font-size:clamp(22px,7vh,28px)}.ex{font-size:19px}
+  .rate{min-height:50px;padding:6px 2px}
+  .rate .rl{font-size:14px}
+  .keys{display:none}
+  .toast{bottom:calc(70px + env(safe-area-inset-bottom,0px))}
+  .is-study .toast{bottom:calc(92px + env(safe-area-inset-bottom,0px))}
+  .state{padding:20px 18px}
+}
 [hidden]{display:none!important}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 
