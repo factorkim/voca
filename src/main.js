@@ -27,7 +27,7 @@ const ui = {
   shownAt: 0, revealedAt: 0, hidden: false, speaks: 0,
   quiz: 'read', curQuiz: 'read', held: false, wtext: '', wres: null   // quiz: 퀴즈 종류(읽기/쓰기), curQuiz: 지금 카드의 방식, held: 쓰기 결과 화면, wtext/wres: 입력한 글자/채점 결과
 };
-try { if (localStorage.getItem('voca.quiz') === 'write') ui.quiz = 'write'; } catch (e) { /* 무시 */ }
+try { { const q = localStorage.getItem('voca.quiz'); if (q === 'write' || q === 'mix') ui.quiz = q; } } catch (e) { /* 무시 */ }
 
 /* ---------- 날짜 도우미 ---------- */
 function ymd(ts) { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -210,7 +210,10 @@ function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.h
 function afterPick() {
   const id = ui.cur, w = WORDS.get(id);
   ui.held = false; ui.wtext = ''; ui.wres = null;
-  ui.curQuiz = ui.quiz === 'write' && w && writeInfo(w) ? 'write' : 'read';
+  // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
+  const c = CARDS.get(id), seen = c && c.phase !== 'new';
+  const wantWrite = ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5);
+  ui.curQuiz = wantWrite && w && writeInfo(w) ? 'write' : 'read';
   if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); return; }
   armAutoReveal(id);
   if (ui.curDir === 'en2ko') autoSpeak(id);
@@ -272,10 +275,10 @@ function rate(r, hold) {
 }
 function wFinish(r, hold) {
   if (!ui.cur || ui.held || ui.curQuiz !== 'write') return;
-  const id = ui.cur, c0 = CARDS.get(id), fresh = !c0 || c0.phase === 'new';
+  const id = ui.cur;
   ui.revealed = true; ui.revealedAt = performance.now();
   rate(r, hold);
-  if (hold && fresh && autoOn() && canSpeak()) { const w = WORDS.get(id); if (w) speak(w.en); }   // 새 단어는 답을 본 뒤 발음을 들려줘요
+  if (hold && autoOn() && canSpeak()) { const w = WORDS.get(id); if (w) speak(w.en); }   // 정답을 확인하면(몰랐음 포함) 발음을 들려줘요
 }
 function wCheck() {
   if (ui.curQuiz !== 'write' || ui.held || !ui.cur) return;
@@ -430,7 +433,7 @@ function viewHome() {
   const info = c.left > 0 ? throttleNote : ('오늘 목표를 모두 채웠어요!' + (nextInfo(now) ? ' ' + nextInfo(now) + '.' : '') + ' 더 하고 싶다면 이어서 계속할 수 있어요.');
   let h = '<section class="hero"><p class="eyebrow">오늘 남은 카드</p><p class="big">' + c.left + '</p>' +
     '<dl class="trio"><div><dt>복습</dt><dd>' + c.dueReview + '</dd></div><div><dt>학습 중</dt><dd>' + c.dueLearn + '</dd></div><div><dt>새 단어</dt><dd>' + c.newAvail + '</dd></div></dl>' +
-    '<div class="seg" role="group" aria-label="퀴즈 종류"><button class="segb' + (ui.quiz === 'read' ? ' on' : '') + '" data-act="quiz" data-q="read" aria-pressed="' + (ui.quiz === 'read') + '">읽기 퀴즈<small>뜻 떠올리기</small></button><button class="segb' + (ui.quiz === 'write' ? ' on' : '') + '" data-act="quiz" data-q="write" aria-pressed="' + (ui.quiz === 'write') + '">쓰기 퀴즈<small>철자 쓰기</small></button></div>' +
+    '<div class="seg" role="group" aria-label="퀴즈 종류">' + [['read', '읽기 퀴즈', '뜻 떠올리기'], ['write', '쓰기 퀴즈', '철자 쓰기'], ['mix', '섞어서', '읽기 + 쓰기']].map((q) => '<button class="segb' + (ui.quiz === q[0] ? ' on' : '') + '" data-act="quiz" data-q="' + q[0] + '" aria-pressed="' + (ui.quiz === q[0]) + '">' + q[1] + '<small>' + q[2] + '</small></button>').join('') + '</div>' +
     '<button class="btn primary block" data-act="start"' + (can ? '' : ' disabled') + '>' + (c.left > 0 ? '학습 시작' : '이어서 더 학습하기') + '</button>' +
     (info ? '<p class="after">' + esc(info) + '</p>' : '') + '</section>';
   h += '<div class="strip"><div><b>' + streak(now) + '일</b><span>연속 학습</span></div><div><b>' + (t.n || 0) + '장</b><span>오늘 학습</span></div><div><b>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</b><span>최근 7일 정답률</span></div></div>';
@@ -598,7 +601,7 @@ function viewBackup() {
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
-    (canSpeak() ? '<label class="field" for="autoSel"><span>새 단어 자동 발음</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음 (새 단어·쓰기 정답)</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -750,7 +753,7 @@ document.addEventListener('click', (e) => {
   if (a === 'go') go(b.getAttribute('data-r'));
   else if (a === 'start') { warmUp(); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
-  else if (a === 'quiz') { ui.quiz = b.getAttribute('data-q') === 'write' ? 'write' : 'read'; try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
+  else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
   else if (a === 'wCheck') wCheck();
   else if (a === 'wUnknown') wFinish('unknown', true);
   else if (a === 'wKnown') wFinish('known', false);
@@ -785,7 +788,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
-  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
+  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오거나 쓰기 정답을 확인하면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
   else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
@@ -804,6 +807,16 @@ document.addEventListener('keydown', (e) => {
   if (!ui.revealed) { if ((e.key === ' ' || e.key === 'Enter') && tag !== 'BUTTON') { e.preventDefault(); reveal(); } }
   else { const m = { '1': 'unknown', '2': 'wrong', '3': 'close', '4': 'right', '5': 'known' }; if (m[e.key]) { e.preventDefault(); rate(m[e.key]); } }
 });
+// 모바일 키보드가 올라오면 하단 버튼 줄을 키보드 바로 위로 올려요 (키보드 높이 = 화면 높이 - 보이는 영역 높이)
+function syncKeyboard() {
+  const vv = window.visualViewport; if (!vv) return;
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  const open = kb > 80;
+  document.documentElement.style.setProperty('--kb', open ? kb + 'px' : '0px');
+  document.body.classList.toggle('kb-open', open);
+}
+if (window.visualViewport) { window.visualViewport.addEventListener('resize', syncKeyboard); window.visualViewport.addEventListener('scroll', syncKeyboard); }
+document.addEventListener('focusout', () => setTimeout(syncKeyboard, 100));
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { ui.hidden = true; persistCache(); return; }
   if (USER) scheduleFlush(0);
