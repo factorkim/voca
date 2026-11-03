@@ -183,6 +183,9 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
   padding:8px max(16px,env(safe-area-inset-right,0px)) calc(8px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
 }
 .bar>div{max-width:640px;margin:0 auto}
+#dock{bottom:var(--kb,0px);transition:bottom .12s ease-out}
+.kb-open .bar{padding-bottom:8px}
+@media (prefers-reduced-motion:reduce){#dock{transition:none}}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .tab{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:6px 4px 4px;font-size:12px;font-weight:500;color:var(--ink3);cursor:pointer;border-radius:var(--r-ctl);transition:color .15s}
 .tab svg{width:44px;height:28px;padding:4px 12px;border-radius:999px;transition:background-color .2s var(--ease)}
@@ -374,3 +377,7 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .typed{font-family:var(--font-head);letter-spacing:.08em}
 .wdock{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
 .wdock .btn{min-height:48px}
+
+/* 키보드가 열렸을 때는 안내 문구를 숨겨서 버튼 줄을 낮게 유지 */
+.kb-open .keys{display:none}
+.kb-open .card{min-height:0}

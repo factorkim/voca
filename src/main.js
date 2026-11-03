@@ -807,6 +807,16 @@ document.addEventListener('keydown', (e) => {
   if (!ui.revealed) { if ((e.key === ' ' || e.key === 'Enter') && tag !== 'BUTTON') { e.preventDefault(); reveal(); } }
   else { const m = { '1': 'unknown', '2': 'wrong', '3': 'close', '4': 'right', '5': 'known' }; if (m[e.key]) { e.preventDefault(); rate(m[e.key]); } }
 });
+// 모바일 키보드가 올라오면 하단 버튼 줄을 키보드 바로 위로 올려요 (키보드 높이 = 화면 높이 - 보이는 영역 높이)
+function syncKeyboard() {
+  const vv = window.visualViewport; if (!vv) return;
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  const open = kb > 80;
+  document.documentElement.style.setProperty('--kb', open ? kb + 'px' : '0px');
+  document.body.classList.toggle('kb-open', open);
+}
+if (window.visualViewport) { window.visualViewport.addEventListener('resize', syncKeyboard); window.visualViewport.addEventListener('scroll', syncKeyboard); }
+document.addEventListener('focusout', () => setTimeout(syncKeyboard, 100));
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { ui.hidden = true; persistCache(); return; }
   if (USER) scheduleFlush(0);
