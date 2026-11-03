@@ -358,9 +358,9 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .segb.on small{color:var(--ink2)}
 
 /* 쓰기 퀴즈 */
-.pat{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;margin:16px 0 14px}
-.pat .gap{width:14px}
-.pat .lt{display:inline-flex;align-items:center;justify-content:center;width:1.25em;height:1.5em;font-family:var(--font-head);font-size:clamp(26px,8vw,34px);line-height:1;border-bottom:3px solid var(--line-strong)}
+.pat{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:3px;margin:16px 0 14px}
+.pat .gap{width:10px}
+.pat .lt{display:inline-flex;align-items:center;justify-content:center;width:.82em;height:1.4em;font-family:var(--font-head);font-size:clamp(26px,8vw,34px);line-height:1;border-bottom:3px solid var(--line-strong)}
 .pat .lt.fix{color:var(--accent-ink);border-color:var(--accent)}
 .pat{cursor:text}
 .pat .lt.blank{border-color:var(--line-strong)}

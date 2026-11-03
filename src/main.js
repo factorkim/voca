@@ -275,10 +275,10 @@ function rate(r, hold) {
 }
 function wFinish(r, hold) {
   if (!ui.cur || ui.held || ui.curQuiz !== 'write') return;
-  const id = ui.cur, c0 = CARDS.get(id), fresh = !c0 || c0.phase === 'new';
+  const id = ui.cur;
   ui.revealed = true; ui.revealedAt = performance.now();
   rate(r, hold);
-  if (hold && fresh && autoOn() && canSpeak()) { const w = WORDS.get(id); if (w) speak(w.en); }   // 새 단어는 답을 본 뒤 발음을 들려줘요
+  if (hold && autoOn() && canSpeak()) { const w = WORDS.get(id); if (w) speak(w.en); }   // 정답을 확인하면(몰랐음 포함) 발음을 들려줘요
 }
 function wCheck() {
   if (ui.curQuiz !== 'write' || ui.held || !ui.cur) return;
@@ -601,7 +601,7 @@ function viewBackup() {
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
-    (canSpeak() ? '<label class="field" for="autoSel"><span>새 단어 자동 발음</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음 (새 단어·쓰기 정답)</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -788,7 +788,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
-  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
+  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오거나 쓰기 정답을 확인하면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
   else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
