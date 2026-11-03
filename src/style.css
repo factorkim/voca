@@ -348,7 +348,7 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .ex b.hl{font-weight:800;color:var(--accent-ink);background:linear-gradient(transparent 62%,var(--accent-soft) 62%)}
 
 /* 퀴즈 종류 선택 (홈) */
-.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;margin-bottom:10px;background:var(--sunk);border-radius:var(--r-ctl);border:1px solid var(--line)}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:4px;margin-bottom:10px;background:var(--sunk);border-radius:var(--r-ctl);border:1px solid var(--line)}
 .segb{display:flex;flex-direction:column;align-items:center;gap:1px;padding:9px 6px;border:0;border-radius:calc(var(--r-ctl) - 3px);background:transparent;color:var(--ink2);font-weight:700;font-size:15px;cursor:pointer;min-width:0}
 .segb small{font-weight:400;font-size:11.5px;color:var(--ink3)}
 .segb.on{background:var(--surface);color:var(--accent-ink);box-shadow:var(--shadow-2)}

@@ -27,7 +27,7 @@ const ui = {
   shownAt: 0, revealedAt: 0, hidden: false, speaks: 0,
   quiz: 'read', curQuiz: 'read', held: false, wtext: '', wres: null   // quiz: 퀴즈 종류(읽기/쓰기), curQuiz: 지금 카드의 방식, held: 쓰기 결과 화면, wtext/wres: 입력한 글자/채점 결과
 };
-try { if (localStorage.getItem('voca.quiz') === 'write') ui.quiz = 'write'; } catch (e) { /* 무시 */ }
+try { { const q = localStorage.getItem('voca.quiz'); if (q === 'write' || q === 'mix') ui.quiz = q; } } catch (e) { /* 무시 */ }
 
 /* ---------- 날짜 도우미 ---------- */
 function ymd(ts) { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -210,7 +210,10 @@ function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.h
 function afterPick() {
   const id = ui.cur, w = WORDS.get(id);
   ui.held = false; ui.wtext = ''; ui.wres = null;
-  ui.curQuiz = ui.quiz === 'write' && w && writeInfo(w) ? 'write' : 'read';
+  // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
+  const c = CARDS.get(id), seen = c && c.phase !== 'new';
+  const wantWrite = ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5);
+  ui.curQuiz = wantWrite && w && writeInfo(w) ? 'write' : 'read';
   if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); return; }
   armAutoReveal(id);
   if (ui.curDir === 'en2ko') autoSpeak(id);
@@ -430,7 +433,7 @@ function viewHome() {
   const info = c.left > 0 ? throttleNote : ('오늘 목표를 모두 채웠어요!' + (nextInfo(now) ? ' ' + nextInfo(now) + '.' : '') + ' 더 하고 싶다면 이어서 계속할 수 있어요.');
   let h = '<section class="hero"><p class="eyebrow">오늘 남은 카드</p><p class="big">' + c.left + '</p>' +
     '<dl class="trio"><div><dt>복습</dt><dd>' + c.dueReview + '</dd></div><div><dt>학습 중</dt><dd>' + c.dueLearn + '</dd></div><div><dt>새 단어</dt><dd>' + c.newAvail + '</dd></div></dl>' +
-    '<div class="seg" role="group" aria-label="퀴즈 종류"><button class="segb' + (ui.quiz === 'read' ? ' on' : '') + '" data-act="quiz" data-q="read" aria-pressed="' + (ui.quiz === 'read') + '">읽기 퀴즈<small>뜻 떠올리기</small></button><button class="segb' + (ui.quiz === 'write' ? ' on' : '') + '" data-act="quiz" data-q="write" aria-pressed="' + (ui.quiz === 'write') + '">쓰기 퀴즈<small>철자 쓰기</small></button></div>' +
+    '<div class="seg" role="group" aria-label="퀴즈 종류">' + [['read', '읽기 퀴즈', '뜻 떠올리기'], ['write', '쓰기 퀴즈', '철자 쓰기'], ['mix', '섞어서', '읽기 + 쓰기']].map((q) => '<button class="segb' + (ui.quiz === q[0] ? ' on' : '') + '" data-act="quiz" data-q="' + q[0] + '" aria-pressed="' + (ui.quiz === q[0]) + '">' + q[1] + '<small>' + q[2] + '</small></button>').join('') + '</div>' +
     '<button class="btn primary block" data-act="start"' + (can ? '' : ' disabled') + '>' + (c.left > 0 ? '학습 시작' : '이어서 더 학습하기') + '</button>' +
     (info ? '<p class="after">' + esc(info) + '</p>' : '') + '</section>';
   h += '<div class="strip"><div><b>' + streak(now) + '일</b><span>연속 학습</span></div><div><b>' + (t.n || 0) + '장</b><span>오늘 학습</span></div><div><b>' + (wn ? Math.round(wr / wn * 100) + '%' : '–') + '</b><span>최근 7일 정답률</span></div></div>';
@@ -750,7 +753,7 @@ document.addEventListener('click', (e) => {
   if (a === 'go') go(b.getAttribute('data-r'));
   else if (a === 'start') { warmUp(); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
-  else if (a === 'quiz') { ui.quiz = b.getAttribute('data-q') === 'write' ? 'write' : 'read'; try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
+  else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
   else if (a === 'wCheck') wCheck();
   else if (a === 'wUnknown') wFinish('unknown', true);
   else if (a === 'wKnown') wFinish('known', false);
