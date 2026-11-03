@@ -211,17 +211,18 @@ function pick() {
   resetTimers();
   if (s.mode === 'leech') {
     while (s.q.length && !WORDS.has(s.q[0])) s.q.shift();
-    if (s.q.length) { ui.cur = s.q.shift(); return; }
+    if (s.q.length) { ui.cur = s.q.shift(); armAutoReveal(ui.cur); return; }
     s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
   }
   // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
   const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
   if (!r) { s.finished = true; return; }
   ui.cur = r.id;
+  armAutoReveal(r.id);
   if (ui.curDir === 'en2ko') autoSpeak(r.id);
   if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
-function reveal() { if (ui.cur && !ui.revealed) { ui.revealed = true; ui.revealedAt = performance.now(); if (ui.curDir === 'ko2en') autoSpeak(ui.cur); render(); } }
+function reveal() { if (ui.cur && !ui.revealed) { clearTimeout(revealTimer); ui.revealed = true; ui.revealedAt = performance.now(); if (ui.curDir === 'ko2en') autoSpeak(ui.cur); render(); } }
 function rate(r) {
   const id = ui.cur; if (!id || !ui.revealed || !ui.session) return;
   const t = Date.now(), perf = performance.now(), s = ui.session;
@@ -290,6 +291,18 @@ function autoSpeak(id) {
   if (!autoOn() || !canSpeak()) return;
   const w = WORDS.get(id), c = CARDS.get(id);
   if (w && (!c || c.phase === 'new')) speak(w.en);
+}
+
+// 자동 정답 공개: 설정한 초가 지나면 정답을 보여 줘요(평가는 여전히 내가 해요). 기기별 저장, 기본은 3초.
+const AUTO_REVEAL = [{ v: 0, label: '끄기' }, { v: 3, label: '3초 뒤' }, { v: 5, label: '5초 뒤' }, { v: 10, label: '10초 뒤' }];
+const AUTO_REVEAL_DEFAULT = 3;
+const autoRevealSec = () => { try { const raw = localStorage.getItem('voca.autoreveal'); if (raw === null) return AUTO_REVEAL_DEFAULT; const n = +raw; return AUTO_REVEAL.some((x) => x.v === n) ? n : AUTO_REVEAL_DEFAULT; } catch (e) { return AUTO_REVEAL_DEFAULT; } };
+let revealTimer = 0;
+function armAutoReveal(id) {
+  clearTimeout(revealTimer);
+  const sec = autoRevealSec();
+  if (!sec) return;
+  revealTimer = setTimeout(() => { if (ui.route === 'study' && ui.session && ui.cur === id && !ui.revealed && !document.hidden) reveal(); }, sec * 1000);
 }
 
 /* ---------- 화면 ---------- */
@@ -485,6 +498,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>새 단어 자동 발음</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
     '<label class="field" for="scaleSel"><span>기억 강도</span><select id="scaleSel">' + STRENGTH.map((x) => '<option value="' + x.scale + '"' + (Math.abs(SET.scale - x.scale) < 0.01 ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
@@ -663,6 +677,7 @@ document.addEventListener('change', (e) => {
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
   else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
+  else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
   else if (t.id === 'shuffleSel') { SET.shuffle = t.value === '1'; buildStudyOrder(); queueSettingsRow(); persistCache(); toast(SET.shuffle ? '새 단어를 Day 안에서 섞어서 보여 줄게요.' : '새 단어를 단어장 순서대로 보여 줄게요.'); }
