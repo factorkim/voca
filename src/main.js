@@ -354,16 +354,15 @@ function gradeWrite(info, typed) {
   let c = 0; for (let i = 0; i < info.n; i++) if (typed[i] === info.exp[i]) c++;
   return { c, n: info.n, typed, rating: c === info.n ? 'right' : (c / info.n >= 0.5 ? 'close' : 'wrong') };
 }
-function patternHtml(info, res) {
-  let k = 0;
+function patternHtml(info, res, typed) {
+  let k = 0; const cur = typed ? typed.length : 0;
   return info.chars.map((ch, i) => {
     if (ch === ' ') return '<span class="gap"></span>';
-    if (!/[A-Za-z]/.test(ch)) return '<span class="lt fix">' + esc(ch) + '</span>';
-    if (info.shown.has(i)) return '<span class="lt fix">' + esc(ch) + '</span>';
+    if (!/[A-Za-z]/.test(ch) || info.shown.has(i)) return '<span class="lt fix">' + esc(ch) + '</span>';
     const j = k++;
-    if (!res) return '<span class="lt blank"></span>';
-    const ok = res.typed[j] === info.exp[j];
-    return '<span class="lt ' + (ok ? 'ok' : 'no') + '">' + esc(ch) + '</span>';
+    if (res) return '<span class="lt ' + (res.typed[j] === info.exp[j] ? 'ok' : 'no') + '">' + esc(ch) + '</span>';
+    if (typed && typed[j]) return '<span class="lt filled">' + esc(typed[j]) + '</span>';
+    return '<span class="lt blank' + (j === cur ? ' cur' : '') + '"></span>';
   }).join('');
 }
 
@@ -456,17 +455,17 @@ function answerExtras(w, c) {
 function writeCard(bar, w, c, tags) {
   const info = writeInfo(w), pos = w.pos ? '<p class="pos">' + esc(w.pos) + '</p>' : '';
   if (!ui.held) {
-    const hint = (info.both ? '첫 글자와 마지막 글자' : '첫 글자') + '가 주어져요. 빈칸 ' + info.n + '글자를 순서대로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
+    const hint = (info.both ? '첫 글자와 마지막 글자' : '첫 글자') + '가 주어져요. 빈칸 ' + info.n + '글자를 키보드로 바로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
     return bar + '<section class="card">' + tags + '<div class="front"><p class="eyebrow">뜻을 보고 영어로 써 보세요</p><h1 class="head-ko">' + esc(w.ko) + '</h1>' + pos +
-      '<div class="pat" role="img" aria-label="' + esc('힌트: ' + info.chars.map((ch, i) => (info.shown.has(i) || !/[A-Za-z]/.test(ch) ? ch : '빈칸')).join(' ')) + '">' + patternHtml(info) + '</div>' +
-      '<input id="wans" class="wans" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="' + info.n + '" placeholder="빈칸 ' + info.n + '글자" aria-label="빈칸에 들어갈 ' + info.n + '글자" value="' + esc(ui.wtext) + '">' +
+      '<label class="pat" id="pat" for="wans" role="img" aria-label="' + esc('힌트: ' + info.chars.map((ch, i) => (info.shown.has(i) || !/[A-Za-z]/.test(ch) ? ch : '빈칸')).join(' ')) + '">' + patternHtml(info, null, ui.wtext) + '</label>' +
+      '<input id="wans" class="wans" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="' + info.n + '" aria-label="빈칸에 들어갈 ' + info.n + '글자" value="' + esc(ui.wtext) + '">' +
       '<p class="muted small hint">' + esc(hint) + '</p></div></section>';
   }
   const res = ui.wres, now = Date.now();
   const lab = res ? RATINGS.filter((x) => x.key === res.rating)[0].label + ' · 맞은 글자 ' + res.c + ' / ' + res.n : '몰랐음';
   const cls = res ? res.rating : 'unknown';
   const word = res ? '<div class="pat big-pat" aria-label="' + esc(w.en) + '">' + patternHtml(info, res) + '</div>' : '<h1 class="head">' + esc(w.en) + '</h1>';
-  const mine = res ? '<p class="muted small">내가 쓴 글자: <b class="typed">' + esc(res.typed) + '</b> → 정답 <b class="typed">' + esc(info.exp) + '</b></p>' : '';
+  const mine = res && res.c < res.n ? '<p class="muted small">내가 쓴 글자: <b class="typed">' + esc(res.typed) + '</b></p>' : '';
   return bar + '<section class="card open">' + tags + '<div class="front"><p class="wres ' + cls + '">' + esc(lab) + '</p>' + word + mine + ipaHtml(w) + speakBtn() + '</div>' +
     '<div class="answer"><p class="ans-ko">' + esc(w.ko) + '</p>' + answerExtras(w, c) + '<p class="muted small">다음 복습: ' + esc(fmtDue(c, now)) + '</p></div></section>';
 }
@@ -503,7 +502,7 @@ function viewDock() {
   if (ui.route !== 'study' || !ui.session || !ui.cur) return '';
   if (ui.curQuiz === 'write') {
     if (ui.held) return '<button class="btn primary block" data-act="wNext">다음</button><p class="keys">Enter 키나 스페이스로도 넘어가요</p>';
-    return '<div class="wdock"><button class="btn" data-act="wUnknown">몰랐음</button><button class="btn primary" data-act="wCheck">정답 확인</button><button class="btn" data-act="wKnown">알고 있음</button></div><p class="keys">입력한 뒤 Enter 키로도 확인해요</p>';
+    return '<div class="wdock"><button class="btn" data-act="wUnknown">몰랐음</button><button class="btn" data-act="wKnown">알고 있음</button></div><button class="btn primary block" data-act="wCheck">정답 확인</button><p class="keys">입력한 뒤 Enter 키로도 확인해요</p>';
   }
   if (!ui.revealed) return '<button class="btn primary block" data-act="reveal">정답 보기</button><p class="keys">스페이스 키로도 볼 수 있어요</p>';
   const now = Date.now(), c = CARDS.get(ui.cur) || blank();
@@ -773,7 +772,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'deleteYes') deleteMine();
 });
 document.addEventListener('input', (e) => {
-  if (e.target.id === 'wans') { const v = e.target.value.replace(/[^A-Za-z]/g, ''); if (v !== e.target.value) e.target.value = v; ui.wtext = v; return; }
+  if (e.target.id === 'wans') { const v = e.target.value.replace(/[^A-Za-z]/g, ''); if (v !== e.target.value) e.target.value = v; ui.wtext = v; const w = WORDS.get(ui.cur), pt = $('#pat'); if (w && pt) { const inf = writeInfo(w); if (inf) pt.innerHTML = patternHtml(inf, null, v); } return; }
   if (e.target.id === 'q') { ui.q = e.target.value; const l = $('#wlist'); if (l) l.innerHTML = wordRows(); }
 });
 document.addEventListener('change', (e) => {
