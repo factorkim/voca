@@ -370,7 +370,35 @@ function audioFor(key, url) {
 }
 function prefetchAudio(words) {
   if (audioSrc() !== 'dict') return;
-  words.forEach((w, i) => setTimeout(() => { resolveAudio(w).then((u) => { if (u) audioFor(String(w).toLowerCase(), u); }); }, 250 * i));
+  words.forEach((w, i) => setTimeout(() => { const k = String(w).toLowerCase(); resolveAudio(w).then((u) => { if (u) loadBuffer(k, u).catch(() => { audioFor(k, u); }); }); }, 250 * i));
+}
+// 웹 오디오로 재생해요: 소리 출력을 미리 열어 두고, 재생 시작을 0.15초 늦춰서 그 사이(무음)에 기기가 깨어나게 해요. 앞부분이 잘리지 않아요.
+// (음원 서버가 다른 출처 접근을 막아 못 받으면 일반 재생기로, 그것도 안 되면 기기 음성으로 넘어가요)
+const LEAD = 0.15;
+let actx = null, curSrc = null, lastSpeak = '';
+const bufCache = new Map();
+function audioCtx() {
+  try {
+    if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (C) actx = new C(); }
+    if (actx && actx.state === 'suspended') actx.resume().catch(() => {});
+  } catch (e) { actx = null; }
+  return actx;
+}
+async function loadBuffer(key, url) {
+  if (bufCache.has(key)) return bufCache.get(key);
+  const c = audioCtx(); if (!c) throw new Error('오디오 장치를 열 수 없어요');
+  const r = await fetch(url, { mode: 'cors' }); if (!r.ok) throw new Error('음원 받기 실패 ' + r.status);
+  const ab = await r.arrayBuffer();
+  const buf = await new Promise((res, rej) => { const p = c.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+  bufCache.set(key, buf); if (bufCache.size > 24) bufCache.delete(bufCache.keys().next().value);
+  return buf;
+}
+function playBuffer(buf) {
+  const c = audioCtx(); if (!c) return false;
+  try { if (curSrc) { curSrc.onended = null; curSrc.stop(); } } catch (e) { /* 무시 */ }
+  const src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination); curSrc = src;
+  src.start(c.currentTime + LEAD);
+  return true;
 }
 function prefetchWords(id) {   // 지금 단어와 곧 나올 새 단어 몇 개의 발음을 미리 받아 둬요
   if (audioSrc() !== 'dict') return;
@@ -379,7 +407,7 @@ function prefetchWords(id) {   // 지금 단어와 곧 나올 새 단어 몇 개
   for (const x of STUDY) { if (x === id) continue; const c = CARDS.get(x); if (!c || c.phase === 'new') { const ww = WORDS.get(x); if (ww) { list.push(ww.en); if (++n >= 5) break; } } }
   prefetchAudio(list);
 }
-function stopAudio() { try { if (curAudio) { curAudio.pause(); curAudio = null; } } catch (e) { /* 무시 */ } }
+function stopAudio() { try { if (curAudio) { curAudio.pause(); curAudio = null; } } catch (e) { /* 무시 */ } try { if (curSrc) { curSrc.onended = null; curSrc.stop(); curSrc = null; } } catch (e) { /* 무시 */ } }
 function playUrl(key, url) {
   const a = audioFor(key, url);
   try { a.currentTime = 0; } catch (e) { /* 아직 불러오는 중이면 무시 */ }
@@ -402,11 +430,21 @@ function ttsSpeak(text) {
 function speak(text) {
   const tok = ++speakToken; stopAudio();
   try { if (canSpeak()) { window.speechSynthesis.cancel(); curUtter = null; clearTimeout(speakTimer); } } catch (e) { /* 무시 */ }
-  if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { ttsSpeak(text); return; }
+  if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { lastSpeak = '기기 음성 (설정)'; ttsSpeak(text); return; }
   const key = String(text).toLowerCase(), known = audioUrls.get(key);
-  const go = (url) => { if (tok !== speakToken) return; if (!url) { ttsSpeak(text); return; } playUrl(key, url).then((ok) => { if (!ok && tok === speakToken) ttsSpeak(text); }); };
-  if (typeof known === 'string') { go(known); return; }   // 이미 알고 있으면 입력 이벤트 안에서 바로 재생해요
-  Promise.race([resolveAudio(text), new Promise((r) => setTimeout(() => r(''), 1200))]).then(go);   // 처음 보는 단어는 주소를 확인하고 재생, 늦으면 기기 음성
+  const tts = (why) => { if (tok !== speakToken) return; lastSpeak = '기기 음성 — ' + why; ttsSpeak(text); };
+  const viaElement = (url, why) => { playUrl(key, url).then((ok) => { if (tok !== speakToken) return; if (ok) lastSpeak = '사전 녹음 (일반 재생기' + (why ? ': ' + why : '') + ')'; else tts('재생이 막혔어요'); }); };
+  const go = (url) => {
+    if (tok !== speakToken) return;
+    if (!url) { tts(audioUrls.get(key) === '' ? '사전에 이 단어의 녹음이 없어요' : '사전에 연결하지 못했어요'); return; }
+    const buf = bufCache.get(key);
+    if (buf && playBuffer(buf)) { lastSpeak = '사전 녹음 (웹 오디오)'; return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
+    audioCtx();
+    loadBuffer(key, url).then((b) => { if (tok !== speakToken) return; if (playBuffer(b)) lastSpeak = '사전 녹음 (웹 오디오)'; else viaElement(url, '웹 오디오 사용 불가'); })
+      .catch((e) => { if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
+  };
+  if (typeof known === 'string') { go(known); return; }
+  Promise.race([resolveAudio(text), new Promise((r) => setTimeout(() => r(''), 1500))]).then(go);   // 처음 보는 단어는 주소를 확인하고 재생, 늦으면 기기 음성
 }
 // 자동 발음: 켜기(모든 카드) / 새 단어만 / 끄기. 영어가 화면에 나타날 때 들려줘요. 기기마다 설정에서 바꿔요.
 const autoMode = () => { try { const v = localStorage.getItem('voca.autospeak'); return v === '0' ? 'off' : (v === 'new' ? 'new' : 'all'); } catch (e) { return 'all'; } };
@@ -704,7 +742,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
-    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p>' : '') +
+    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -854,9 +892,10 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.getAttribute('data-act');
   if (a === 'go') go(b.getAttribute('data-r'));
-  else if (a === 'start') { warmUp(); go('study', 'daily'); }
+  else if (a === 'start') { warmUp(); audioCtx(); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
+  else if (a === 'speakTest') { audioCtx(); speak('abandon'); setTimeout(() => { const el = $('#speakInfo'); if (el) el.textContent = '방금 재생: ' + (lastSpeak || '재생하지 못했어요'); }, 1800); }
   else if (a === 'undo') undo();
   else if (a === 'wCheck') wCheck();
   else if (a === 'wUnknown') wFinish('unknown', true);
