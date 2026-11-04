@@ -214,7 +214,7 @@ function afterPick() {
   const c = CARDS.get(id), seen = c && c.phase !== 'new';
   const wantWrite = ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5);
   ui.curQuiz = wantWrite && w && writeInfo(w) ? 'write' : 'read';
-  if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); return; }
+  if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); ui.revealEnd = 0; return; }
   armAutoReveal(id);
   if (ui.curDir === 'en2ko') autoSpeak(id);
 }
@@ -235,19 +235,45 @@ function pick() {
   afterPick();
   if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
-function reveal() { if (ui.cur && !ui.revealed) { clearTimeout(revealTimer); ui.revealed = true; ui.revealedAt = performance.now(); if (ui.curDir === 'ko2en') autoSpeak(ui.cur); render(); } }
+// 이전 단어로 돌아가기: 마지막 평가를 취소하고(카드 상태, 복습 기록, 오늘/세션 집계를 되돌려요) 그 단어를 다시 보여 줘요.
+function undo() {
+  const s = ui.session; if (!s || !s.stack || !s.stack.length || !USER) return;
+  const u = s.stack.pop();
+  clearTimeout(revealTimer);
+  if (s.mode === 'leech' && ui.cur && ui.cur !== u.id) s.q.unshift(ui.cur);   // 집중 복습 중이면 아직 안 푼 현재 카드를 목록 맨 앞에 되돌려 놔요
+  if (u.prev) CARDS.set(u.id, u.prev); else CARDS.delete(u.id);
+  S.queueCard(USER.id, u.id, u.prev || blank());
+  S.dropLog(u.logId);
+  DAILY.set(u.dayKey, u.dd);
+  Object.assign(s, u.ses); s.finished = false;
+  S.queueSession({
+    id: s.id, user_id: USER.id, started_at: new Date(s.startedAt).toISOString(), last_activity_at: new Date().toISOString(), mode: s.mode, cards_done: s.done,
+    n_wrong: s.w, n_close: s.c, n_right: s.r, n_unknown: s.u, n_known: s.k, n_new: s.nw, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, device: deviceInfo(), app_version: APP_VERSION
+  });
+  ui.cur = u.id; ui.curDir = u.dir; ui.curQuiz = u.quiz; ui.revealed = false; ui.held = false; ui.wtext = ''; ui.wres = null;
+  resetTimers();
+  if (ui.curQuiz === 'read') { armAutoReveal(u.id); if (ui.curDir === 'en2ko') autoSpeak(u.id); }
+  scheduleFlush(); persistCache(); toast('이전 단어로 돌아왔어요. 방금 한 평가는 취소됐어요.'); render();
+}
+function reveal() { if (ui.cur && !ui.revealed) { clearTimeout(revealTimer); ui.revealEnd = 0; ui.revealed = true; ui.revealedAt = performance.now(); if (ui.curDir === 'ko2en') autoSpeak(ui.cur); render(); } }
 function rate(r, hold) {
   const id = ui.cur; if (!id || !ui.revealed || !ui.session) return;
   const t = Date.now(), perf = performance.now(), s = ui.session;
   const prev = CARDS.get(id), wasNew = !prev || prev.phase === 'new', p = prev || blank();
   const left = counts(t).left;
+  // 되돌리기용 스냅샷: 평가 전의 카드, 오늘 집계, 세션 집계를 보관해요
+  const logId = uuid(), dayKey = ymd(t);
+  s.stack = s.stack || [];
+  s.stack.push({ id, prev, logId, dayKey, dd: Object.assign(emptyDay(), DAILY.get(dayKey)), dir: ui.curDir, quiz: ui.curQuiz,
+    ses: { done: s.done, w: s.w, c: s.c, r: s.r, u: s.u, k: s.k, nw: s.nw, sinceNew: s.sinceNew, lastId: s.lastId } });
+  if (s.stack.length > 30) s.stack.shift();
   const next = schedule(prev, r, t, { scale: SET.scale });
   CARDS.set(id, next);
   S.queueCard(USER.id, id, next);
 
   const iso = (x) => (x ? new Date(x).toISOString() : null);
   S.queueLog({
-    user_id: USER.id, client_id: uuid(), word_id: id, reviewed_at: iso(t), local_date: ymd(t), local_hour: new Date(t).getHours(),
+    user_id: USER.id, client_id: logId, word_id: id, reviewed_at: iso(t), local_date: ymd(t), local_hour: new Date(t).getHours(),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone, rating: r, direction: ui.curDir, mode: s.mode, is_new: wasNew,
     phase_before: p.phase, phase_after: next.phase, ivl_before: p.ivl, ivl_after: next.ivl, ease_before: p.ease, ease_after: next.ease,
     reps_before: p.reps, reps_after: next.reps, lapses_before: p.lapses, lapses_after: next.lapses, step_before: p.step,
@@ -377,6 +403,7 @@ let revealTimer = 0;
 function armAutoReveal(id) {
   clearTimeout(revealTimer);
   const sec = autoRevealSec();
+  ui.revealEnd = sec ? performance.now() + sec * 1000 : 0;   // 남은 시간 막대를 그릴 기준 시각
   if (!sec) return;
   revealTimer = setTimeout(() => { if (ui.route === 'study' && ui.session && ui.cur === id && !ui.revealed && !document.hidden) reveal(); }, sec * 1000);
 }
@@ -478,7 +505,7 @@ function viewStudy() {
   const left = s.mode === 'leech' ? (s.q.length + (ui.cur ? 1 : 0)) : counts(now).left;
   const pct = s.done + left ? Math.round(s.done / (s.done + left) * 100) : 100;
   const prog = left > 0 ? '오늘 ' + s.done + '장 · 남은 ' + left + '장' : '오늘 ' + s.done + '장 · 목표 달성';
-  const bar = '<div class="studybar"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button><span class="prog">' + esc(prog) + '</span></div>' +
+  const bar = '<div class="studybar"><span class="sb-l"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button>' + (s.stack && s.stack.length ? '<button class="btn ghost" data-act="undo" title="마지막 평가를 취소하고 이전 단어로 돌아가요">↶ 이전 단어</button>' : '') + '</span><span class="prog">' + esc(prog) + '</span></div>' +
     '<div class="track" role="progressbar" aria-label="이번 학습 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><i style="width:' + pct + '%"></i></div>';
   if (!ui.cur) {
     const tot = s.u + s.w + s.c + s.r + s.k;
@@ -499,7 +526,12 @@ function viewStudy() {
     ans += answerExtras(w, c);
     ans += '</div>';
   }
-  return bar + '<section class="card' + (ui.revealed ? ' open' : '') + '">' + tags + front + ans + '</section>';
+  let cd = '';
+  if (!ui.revealed && ui.revealEnd) {   // 자동 정답 공개까지 남은 시간 막대 (다시 그려도 이어서 줄어들도록 지난 시간만큼 앞당겨 시작해요)
+    const sec = autoRevealSec(), left = Math.max(0, (ui.revealEnd - performance.now()) / 1000);
+    if (sec && left > 0) cd = '<div class="rbar" aria-hidden="true"><i style="animation-duration:' + sec + 's;animation-delay:-' + (sec - left).toFixed(2) + 's"></i></div>';
+  }
+  return bar + '<section class="card' + (ui.revealed ? ' open' : '') + '">' + tags + cd + front + ans + '</section>';
 }
 function viewDock() {
   if (ui.route !== 'study' || !ui.session || !ui.cur) return '';
@@ -754,6 +786,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'start') { warmUp(); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
+  else if (a === 'undo') undo();
   else if (a === 'wCheck') wCheck();
   else if (a === 'wUnknown') wFinish('unknown', true);
   else if (a === 'wKnown') wFinish('known', false);
