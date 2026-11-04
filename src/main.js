@@ -314,8 +314,11 @@ function wCheck() {
   wFinish(ui.wres.rating, true);
 }
 function wNext() { if (ui.held) { pick(); render(); } }
-// 발음 재생. 앞부분이 잘리지 않도록: (1) 첫 재생 전에 소리 없는 문장으로 음성 엔진을 깨워 두고, (2) 재생 중일 때만 cancel 하고 잠깐 기다렸다가 재생하며,
-// (3) 영어(미국) 목소리를 직접 고르고, (4) 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
+// 발음 재생. 앞부분이 잘리지 않도록:
+// (1) '학습 시작'을 누를 때 소리 없는 문장으로 음성 엔진을 깨워 두고,
+// (2) 단어 앞에 쉼표를 붙여 짧은 쉼으로 시작해요. 기기가 소리 출력을 여는 동안 단어 앞부분이 아니라 이 쉼이 잘려요.
+// (3) 읽는 중이 아니면 터치/키 입력 안에서 바로 재생해요. 일부 브라우저(iOS 등)는 입력 직후가 아니면 소리를 막아요.
+// (4) 영어(미국) 목소리를 직접 고르고, 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
 let speakTimer = 0, warmed = false, curUtter = null, enVoice = null;
 const canSpeak = () => 'speechSynthesis' in window;
 function pickVoice() {
@@ -326,25 +329,30 @@ function warmUp() {
   if (warmed || !canSpeak()) return; warmed = true;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'en-US'; window.speechSynthesis.speak(u); } catch (e) { /* 무시 */ }
 }
+function speakNow(text) {
+  const u = new SpeechSynthesisUtterance(', ' + text); u.lang = 'en-US'; u.rate = 0.9; if (enVoice) u.voice = enVoice;
+  curUtter = u; u.onend = u.onerror = () => { if (curUtter === u) curUtter = null; };
+  window.speechSynthesis.speak(u);
+}
 function speak(text) {
   try {
     if (!canSpeak()) return;
     warmUp();
     clearTimeout(speakTimer);
-    if (curUtter) window.speechSynthesis.cancel();   // 지금 읽는 중일 때만 끊어요 (깨워 둔 엔진을 취소하지 않게)
-    speakTimer = setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9; if (enVoice) u.voice = enVoice;
-      curUtter = u; u.onend = u.onerror = () => { if (curUtter === u) curUtter = null; };
-      window.speechSynthesis.speak(u);
-    }, 120);
+    const synth = window.speechSynthesis;
+    if (curUtter || synth.speaking || synth.pending) {   // 읽는 중이면 끊고, 취소가 끝나길 잠깐 기다렸다가 재생해요
+      synth.cancel(); curUtter = null;
+      speakTimer = setTimeout(() => { try { speakNow(text); } catch (e) { /* 무시 */ } }, 90);
+    } else { try { synth.resume(); } catch (e) { /* 무시 */ } speakNow(text); }
   } catch (e) { /* 무시 */ }
 }
-// 새 단어가 처음 나올 때 자동으로 발음을 들려줘요. 기기마다 설정에서 끌 수 있어요.
-const autoOn = () => { try { return localStorage.getItem('voca.autospeak') !== '0'; } catch (e) { return true; } };
+// 자동 발음: 켜기(모든 카드) / 새 단어만 / 끄기. 영어가 화면에 나타날 때 들려줘요. 기기마다 설정에서 바꿔요.
+const autoMode = () => { try { const v = localStorage.getItem('voca.autospeak'); return v === '0' ? 'off' : (v === 'new' ? 'new' : 'all'); } catch (e) { return 'all'; } };
+const autoOn = () => autoMode() !== 'off';
 function autoSpeak(id) {
-  if (!autoOn() || !canSpeak()) return;
+  const m = autoMode(); if (m === 'off' || !canSpeak()) return;
   const w = WORDS.get(id), c = CARDS.get(id);
-  if (w && (!c || c.phase === 'new')) speak(w.en);
+  if (w && (m === 'all' || !c || c.phase === 'new')) speak(w.en);
 }
 
 // 예문 속 해당 단어(-s, -ed, -ing 같은 활용형 포함)를 굵게 보여 줘요. 못 찾으면 그대로 둬요.
@@ -633,7 +641,7 @@ function viewBackup() {
   return '<section class="block" style="margin-top:0"><h2>학습 설정</h2>' +
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
-    (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음 (새 단어·쓰기 정답)</span><select id="autoSel"><option value="1"' + (autoOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (autoOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -821,7 +829,7 @@ document.addEventListener('change', (e) => {
     rebuildOrder(); ui.session = null; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast('단어장을 바꿨어요.');
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
-  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value === '1') warmUp(); toast(t.value === '1' ? '새 단어가 나오거나 쓰기 정답을 확인하면 발음을 들려줄게요.' : '자동 발음을 껐어요.'); }
+  else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value !== '0') warmUp(); toast(t.value === '1' ? '영어 단어가 나올 때마다 발음을 들려줄게요. (쓰기 퀴즈는 정답을 확인하면)' : (t.value === 'new' ? '새 단어가 나올 때만 발음을 들려줄게요.' : '자동 발음을 껐어요.')); }
   else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
