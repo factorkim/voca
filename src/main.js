@@ -374,8 +374,23 @@ function prefetchAudio(words) {
 }
 // 웹 오디오로 재생해요: 소리 출력을 미리 열어 두고, 재생 시작을 0.15초 늦춰서 그 사이(무음)에 기기가 깨어나게 해요. 앞부분이 잘리지 않아요.
 // (음원 서버가 다른 출처 접근을 막아 못 받으면 일반 재생기로, 그것도 안 되면 기기 음성으로 넘어가요)
-const LEAD = 0.15;
-let actx = null, curSrc = null, lastSpeak = '';
+const LEAD = 0.3;
+let actx = null, curSrc = null, lastSpeak = '', keepNode = null;
+const noteOn = () => { try { return localStorage.getItem('voca.speaknote') !== '0'; } catch (e) { return true; } };
+function setLast(msg) {   // 어떤 방식으로 재생됐는지 기록하고, 켜 두었으면 스피커 버튼 아래에 작게 보여 줘요
+  lastSpeak = msg;
+  const el = typeof document !== 'undefined' ? document.getElementById('speakNote') : null;
+  if (el) el.textContent = noteOn() ? '▶ ' + msg : '';
+}
+// 소리 출력이 쉬는 동안 꺼졌다 켜지며 앞부분이 잘리는 기기(특히 블루투스)를 위해, 학습 중에는 들리지 않을 만큼 작은 소리를 계속 내보내 출력을 열어 둬요.
+function keepAlive(on) {
+  try {
+    if (!on) { if (keepNode) { keepNode.osc.stop(); keepNode.osc.disconnect(); keepNode.g.disconnect(); keepNode = null; } return; }
+    const c = audioCtx(); if (!c || keepNode) return;
+    const osc = c.createOscillator(), g = c.createGain(); osc.frequency.value = 30; g.gain.value = 0.0003;
+    osc.connect(g); g.connect(c.destination); osc.start(); keepNode = { osc, g };
+  } catch (e) { keepNode = null; }
+}
 const bufCache = new Map();
 function audioCtx() {
   try {
@@ -430,17 +445,17 @@ function ttsSpeak(text) {
 function speak(text) {
   const tok = ++speakToken; stopAudio();
   try { if (canSpeak()) { window.speechSynthesis.cancel(); curUtter = null; clearTimeout(speakTimer); } } catch (e) { /* 무시 */ }
-  if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { lastSpeak = '기기 음성 (설정)'; ttsSpeak(text); return; }
+  if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { setLast('기기 음성 (설정)'); ttsSpeak(text); return; }
   const key = String(text).toLowerCase(), known = audioUrls.get(key);
-  const tts = (why) => { if (tok !== speakToken) return; lastSpeak = '기기 음성 — ' + why; ttsSpeak(text); };
-  const viaElement = (url, why) => { playUrl(key, url).then((ok) => { if (tok !== speakToken) return; if (ok) lastSpeak = '사전 녹음 (일반 재생기' + (why ? ': ' + why : '') + ')'; else tts('재생이 막혔어요'); }); };
+  const tts = (why) => { if (tok !== speakToken) return; setLast('기기 음성 — ' + why); ttsSpeak(text); };
+  const viaElement = (url, why) => { playUrl(key, url).then((ok) => { if (tok !== speakToken) return; if (ok) setLast('사전 녹음 (일반 재생기' + (why ? ': ' + why : '') + ')'); else tts('재생이 막혔어요'); }); };
   const go = (url) => {
     if (tok !== speakToken) return;
     if (!url) { tts(audioUrls.get(key) === '' ? '사전에 이 단어의 녹음이 없어요' : '사전에 연결하지 못했어요'); return; }
     const buf = bufCache.get(key);
-    if (buf && playBuffer(buf)) { lastSpeak = '사전 녹음 (웹 오디오)'; return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
+    if (buf && playBuffer(buf)) { setLast('사전 녹음 (웹 오디오)'); return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
     audioCtx();
-    loadBuffer(key, url).then((b) => { if (tok !== speakToken) return; if (playBuffer(b)) lastSpeak = '사전 녹음 (웹 오디오)'; else viaElement(url, '웹 오디오 사용 불가'); })
+    loadBuffer(key, url).then((b) => { if (tok !== speakToken) return; if (playBuffer(b)) setLast('사전 녹음 (웹 오디오)'); else viaElement(url, '웹 오디오 사용 불가'); })
       .catch((e) => { if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
   };
   if (typeof known === 'string') { go(known); return; }
@@ -520,7 +535,7 @@ function armAutoReveal(id) {
 const SPEAKER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 function ipaHtml(w) { const v = w && w.ipa ? String(w.ipa).replace(/^\/+|\/+$/g, '') : ''; return v ? '<p class="ipa" lang="en-fonipa">/' + esc(v) + '/</p>' : ''; }
 const good = (l) => (l.r || 0) + (l.k || 0);   // 정답으로 치는 평가: 맞았음 + 알고 있음
-function speakBtn() { return canSpeak() ? '<button class="speak" data-act="speak" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button>' : ''; }
+function speakBtn() { return canSpeak() ? '<span class="spk"><button class="speak" data-act="speak" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button><span class="srcnote" id="speakNote" aria-live="polite">' + (noteOn() && lastSpeak ? '▶ ' + esc(lastSpeak) : '') + '</span></span>' : ''; }
 
 function viewLoading() { return '<div class="state"><div class="spin" aria-hidden="true"></div><p>단어와 학습 기록을 불러오는 중이에요.</p></div>'; }
 function viewNoConfig() {
@@ -742,7 +757,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
-    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p>' : '') +
+    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p><label class="field" for="noteSel"><span>재생 방식 표시</span><select id="noteSel"><option value="1"' + (noteOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (noteOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -790,6 +805,7 @@ function render() {
 function onRoute() {
   const h = (location.hash || '#home').slice(1);
   const r = ROUTES.indexOf(h) >= 0 ? h : 'home';
+  if (r !== 'study') keepAlive(false);
   if (r !== 'study' || ui.route !== 'study') ui.session = null;
   ui.route = r; ui.confirmDelete = false;
   render(); window.scrollTo(0, 0);
@@ -892,7 +908,7 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.getAttribute('data-act');
   if (a === 'go') go(b.getAttribute('data-r'));
-  else if (a === 'start') { warmUp(); audioCtx(); go('study', 'daily'); }
+  else if (a === 'start') { warmUp(); keepAlive(true); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
   else if (a === 'speakTest') { audioCtx(); speak('abandon'); setTimeout(() => { const el = $('#speakInfo'); if (el) el.textContent = '방금 재생: ' + (lastSpeak || '재생하지 못했어요'); }, 1800); }
@@ -932,6 +948,7 @@ document.addEventListener('change', (e) => {
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
   else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value !== '0') warmUp(); toast(t.value === '1' ? '영어 단어가 나올 때마다 발음을 들려줄게요. (쓰기 퀴즈는 정답을 확인하면)' : (t.value === 'new' ? '새 단어가 나올 때만 발음을 들려줄게요.' : '자동 발음을 껐어요.')); }
+  else if (t.id === 'noteSel') { try { localStorage.setItem('voca.speaknote', t.value); } catch (e) { /* 무시 */ } toast(t.value === '1' ? '스피커 버튼 아래에 재생 방식을 작게 보여 줄게요.' : '재생 방식 표시를 껐어요.'); }
   else if (t.id === 'srcSel') { try { localStorage.setItem('voca.audiosrc', t.value); } catch (e) { /* 무시 */ } toast(t.value === 'dict' ? '사전에 녹음된 발음을 쓸게요.' : '기기 음성으로 읽을게요.'); }
   else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
@@ -962,7 +979,8 @@ function syncKeyboard() {
 if (window.visualViewport) { window.visualViewport.addEventListener('resize', syncKeyboard); window.visualViewport.addEventListener('scroll', syncKeyboard); }
 document.addEventListener('focusout', () => setTimeout(syncKeyboard, 100));
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { ui.hidden = true; persistCache(); return; }
+  if (document.hidden) { ui.hidden = true; persistCache(); keepAlive(false); return; }
+  if (ui.route === 'study') keepAlive(true);
   if (USER) scheduleFlush(0);
   if (Date.now() - BOOT_AT > 6 * 3600 * 1000 && ui.route !== 'study') location.reload();   // 오래 켜 둔 앱은 새 버전을 받도록 다시 불러와요
 });
