@@ -381,3 +381,11 @@ h2{font-size:15px;font-weight:700;letter-spacing:-.01em}
 /* 키보드가 열렸을 때는 안내 문구를 숨겨서 버튼 줄을 낮게 유지 */
 .kb-open .keys{display:none}
 .kb-open .card{min-height:0}
+
+/* 정답 공개까지 남은 시간 막대 */
+.rbar{height:5px;border-radius:999px;background:var(--line);overflow:hidden;margin:12px 0 0}
+.rbar i{display:block;height:100%;width:100%;border-radius:inherit;transform-origin:left center;background:linear-gradient(90deg,#F0BE5A,var(--mk-c));animation-name:rshrink;animation-timing-function:linear;animation-fill-mode:forwards}
+@keyframes rshrink{to{transform:scaleX(0)}}
+
+/* 나가기 + 이전 단어 */
+.sb-l{display:flex;align-items:center;gap:2px;min-width:0}

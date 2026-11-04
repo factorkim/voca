@@ -105,17 +105,17 @@ export function writeCache(uid, data) {
 export function lastUid() { try { return localStorage.getItem('voca.lastUid'); } catch (e) { return null; } }
 
 /* ---------- 보관함(outbox): 저장 실패나 오프라인이어도 기록이 사라지지 않게 해요 ---------- */
-let OUT = { cards: {}, logs: [], sessions: {}, settings: null };
+let OUT = { cards: {}, logs: [], sessions: {}, settings: null, dels: [] };
 let outUid = null;
 let flushing = false;
 
 function persistOut() { try { localStorage.setItem('voca.out.' + outUid, JSON.stringify(OUT)); } catch (e) { /* 무시 */ } }
 export function loadOutbox(uid) {
   outUid = uid;
-  try { OUT = Object.assign({ cards: {}, logs: [], sessions: {}, settings: null }, JSON.parse(localStorage.getItem('voca.out.' + uid) || '{}')); }
-  catch (e) { OUT = { cards: {}, logs: [], sessions: {}, settings: null }; }
+  try { OUT = Object.assign({ cards: {}, logs: [], sessions: {}, settings: null, dels: [] }, JSON.parse(localStorage.getItem('voca.out.' + uid) || '{}')); }
+  catch (e) { OUT = { cards: {}, logs: [], sessions: {}, settings: null, dels: [] }; }
 }
-export function pendingCount() { return Object.keys(OUT.cards).length + OUT.logs.length + Object.keys(OUT.sessions).length + (OUT.settings ? 1 : 0); }
+export function pendingCount() { return Object.keys(OUT.cards).length + OUT.logs.length + Object.keys(OUT.sessions).length + (OUT.settings ? 1 : 0) + OUT.dels.length; }
 export function pendingCardIds() { return Object.keys(OUT.cards); }
 export function pendingLogDates() {
   const m = {};
@@ -124,10 +124,17 @@ export function pendingLogDates() {
 }
 export function pendingCards() { return OUT.cards; }
 export function pendingSettings() { return OUT.settings; }
-export function clearOutbox() { OUT = { cards: {}, logs: [], sessions: {}, settings: null }; persistOut(); }
+export function clearOutbox() { OUT = { cards: {}, logs: [], sessions: {}, settings: null, dels: [] }; persistOut(); }
 export function queueCard(uid, wid, card) { OUT.cards[wid] = cardToRow(uid, wid, card); persistOut(); }
 export function queueLog(row) { OUT.logs.push(row); persistOut(); }
 export function queueSession(row) { OUT.sessions[row.id] = row; persistOut(); }
+// 되돌리기: 아직 서버에 안 보낸 기록이면 보관함에서 빼고, 이미 보냈다면 삭제 요청을 보관함에 넣어요
+export function dropLog(clientId) {
+  const n = OUT.logs.length;
+  OUT.logs = OUT.logs.filter((l) => l.client_id !== clientId);
+  if (OUT.logs.length === n && OUT.dels.indexOf(clientId) < 0) OUT.dels.push(clientId);
+  persistOut();
+}
 export function queueSettings(row) { OUT.settings = row; persistOut(); }
 
 export async function flush() {
@@ -156,6 +163,12 @@ export async function flush() {
         const done = new Set(part.map((l) => l.client_id));
         OUT.logs = OUT.logs.filter((l) => !done.has(l.client_id));
       }
+    }
+    if (OUT.dels.length) {
+      const ids = OUT.dels.slice();
+      const { error } = await sb.from('review_log').delete().eq('user_id', outUid).in('client_id', ids);
+      if (error) throw error;
+      OUT.dels = OUT.dels.filter((x) => ids.indexOf(x) < 0);
     }
     if (snap.sessions.length) {
       const { error } = await sb.from('study_sessions').upsert(snap.sessions.map((e) => e[1]));
