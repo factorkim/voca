@@ -210,6 +210,7 @@ function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.h
 function afterPick() {
   const id = ui.cur, w = WORDS.get(id);
   ui.held = false; ui.wtext = ''; ui.wres = null;
+  prefetchWords(id);
   // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
   const c = CARDS.get(id), seen = c && c.phase !== 'new';
   const wantWrite = ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5);
@@ -334,7 +335,59 @@ function speakNow(text) {
   curUtter = u; u.onend = u.onerror = () => { if (curUtter === u) curUtter = null; };
   window.speechSynthesis.speak(u);
 }
-function speak(text) {
+// 안드로이드는 기기 음성 엔진이 시작할 때 앞부분이 잘리는 경우가 많아요. 그래서 기본은 사전의 녹음된 발음(mp3)을 쓰고,
+// 음원이 없는 단어나 인터넷이 안 될 때만 기기 음성으로 읽어요. 음원 주소는 기기에 저장하고, 곧 나올 단어는 미리 받아 둬요.
+const audioSrc = () => { try { return localStorage.getItem('voca.audiosrc') === 'tts' ? 'tts' : 'dict'; } catch (e) { return 'dict'; } };
+const audioUrls = new Map();   // 단어 -> 주소('' = 음원 없음) 또는 확인 중인 Promise
+const audioEls = new Map();    // 단어 -> Audio (최근 16개)
+let curAudio = null, speakToken = 0;
+function resolveAudio(word) {
+  const key = String(word).toLowerCase();
+  if (audioUrls.has(key)) { const v = audioUrls.get(key); return typeof v === 'string' ? Promise.resolve(v) : v; }
+  try { const c = localStorage.getItem('voca.au.' + key); if (c !== null) { const u = c === '-' ? '' : c; audioUrls.set(key, u); return Promise.resolve(u); } } catch (e) { /* 무시 */ }
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null, to = setTimeout(() => { if (ctl) ctl.abort(); }, 4500);
+  const p = fetch('https://api.dictionaryapi.dev/v2/entries/en/' + encodeURIComponent(key), ctl ? { signal: ctl.signal } : undefined)
+    .then(async (r) => {
+      if (r.status === 404) return { url: '', keep: true };
+      if (!r.ok) throw new Error('http');
+      const j = await r.json(); let best = '';
+      if (Array.isArray(j)) outer: for (const e of j) for (const ph of (e.phonetics || [])) { const u = ph && ph.audio; if (u && /^https:\/\//.test(u)) { if (/-us\.mp3$/.test(u)) { best = u; break outer; } if (!best) best = u; } }
+      return { url: best, keep: true };
+    })
+    .catch(() => ({ url: '', keep: false }))   // 인터넷 오류는 저장하지 않고 다음에 다시 시도해요
+    .then((o) => {
+      clearTimeout(to);
+      if (o.keep) { audioUrls.set(key, o.url); try { localStorage.setItem('voca.au.' + key, o.url || '-'); } catch (e) { /* 무시 */ } } else audioUrls.delete(key);
+      return o.url;
+    });
+  audioUrls.set(key, p);
+  return p;
+}
+function audioFor(key, url) {
+  let a = audioEls.get(key);
+  if (!a || a.__url !== url) { a = new Audio(); a.preload = 'auto'; a.__url = url; a.src = url; audioEls.delete(key); audioEls.set(key, a); if (audioEls.size > 16) audioEls.delete(audioEls.keys().next().value); }
+  return a;
+}
+function prefetchAudio(words) {
+  if (audioSrc() !== 'dict') return;
+  words.forEach((w, i) => setTimeout(() => { resolveAudio(w).then((u) => { if (u) audioFor(String(w).toLowerCase(), u); }); }, 250 * i));
+}
+function prefetchWords(id) {   // 지금 단어와 곧 나올 새 단어 몇 개의 발음을 미리 받아 둬요
+  if (audioSrc() !== 'dict') return;
+  const list = [], w = WORDS.get(id); if (w) list.push(w.en);
+  let n = 0;
+  for (const x of STUDY) { if (x === id) continue; const c = CARDS.get(x); if (!c || c.phase === 'new') { const ww = WORDS.get(x); if (ww) { list.push(ww.en); if (++n >= 5) break; } } }
+  prefetchAudio(list);
+}
+function stopAudio() { try { if (curAudio) { curAudio.pause(); curAudio = null; } } catch (e) { /* 무시 */ } }
+function playUrl(key, url) {
+  const a = audioFor(key, url);
+  try { a.currentTime = 0; } catch (e) { /* 아직 불러오는 중이면 무시 */ }
+  curAudio = a;
+  const pr = a.play();
+  return pr && typeof pr.then === 'function' ? pr.then(() => true, () => false) : Promise.resolve(true);
+}
+function ttsSpeak(text) {
   try {
     if (!canSpeak()) return;
     warmUp();
@@ -345,6 +398,15 @@ function speak(text) {
       speakTimer = setTimeout(() => { try { speakNow(text); } catch (e) { /* 무시 */ } }, 90);
     } else { try { synth.resume(); } catch (e) { /* 무시 */ } speakNow(text); }
   } catch (e) { /* 무시 */ }
+}
+function speak(text) {
+  const tok = ++speakToken; stopAudio();
+  try { if (canSpeak()) { window.speechSynthesis.cancel(); curUtter = null; clearTimeout(speakTimer); } } catch (e) { /* 무시 */ }
+  if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { ttsSpeak(text); return; }
+  const key = String(text).toLowerCase(), known = audioUrls.get(key);
+  const go = (url) => { if (tok !== speakToken) return; if (!url) { ttsSpeak(text); return; } playUrl(key, url).then((ok) => { if (!ok && tok === speakToken) ttsSpeak(text); }); };
+  if (typeof known === 'string') { go(known); return; }   // 이미 알고 있으면 입력 이벤트 안에서 바로 재생해요
+  Promise.race([resolveAudio(text), new Promise((r) => setTimeout(() => r(''), 1200))]).then(go);   // 처음 보는 단어는 주소를 확인하고 재생, 늦으면 기기 음성
 }
 // 자동 발음: 켜기(모든 카드) / 새 단어만 / 끄기. 영어가 화면에 나타날 때 들려줘요. 기기마다 설정에서 바꿔요.
 const autoMode = () => { try { const v = localStorage.getItem('voca.autospeak'); return v === '0' ? 'off' : (v === 'new' ? 'new' : 'all'); } catch (e) { return 'all'; } };
@@ -642,6 +704,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -830,6 +893,7 @@ document.addEventListener('change', (e) => {
   }
   else if (t.id === 'dirSel') { SET.dir = t.value; queueSettingsRow(); toast('출제 방향을 바꿨어요.'); }
   else if (t.id === 'autoSel') { try { localStorage.setItem('voca.autospeak', t.value); } catch (e) { /* 무시 */ } if (t.value !== '0') warmUp(); toast(t.value === '1' ? '영어 단어가 나올 때마다 발음을 들려줄게요. (쓰기 퀴즈는 정답을 확인하면)' : (t.value === 'new' ? '새 단어가 나올 때만 발음을 들려줄게요.' : '자동 발음을 껐어요.')); }
+  else if (t.id === 'srcSel') { try { localStorage.setItem('voca.audiosrc', t.value); } catch (e) { /* 무시 */ } toast(t.value === 'dict' ? '사전에 녹음된 발음을 쓸게요.' : '기기 음성으로 읽을게요.'); }
   else if (t.id === 'revealSel') { try { localStorage.setItem('voca.autoreveal', t.value); } catch (e) { /* 무시 */ } toast(+t.value ? t.value + '초가 지나면 정답을 자동으로 보여 줄게요.' : '자동 정답 공개를 껐어요.'); }
   else if (t.id === 'scaleSel') { SET.scale = +t.value; queueSettingsRow(); persistCache(); render(); toast('기억 강도를 바꿨어요. 앞으로 복습하는 단어부터 적용돼요.'); }
   else if (t.id === 'capSel') { SET.cap = +t.value; ui.backlog = null; queueSettingsRow(); persistCache(); render(); toast(SET.cap ? '하루 복습 상한을 ' + SET.cap + '번으로 바꿨어요.' : '하루 복습 상한을 없앴어요.'); }
