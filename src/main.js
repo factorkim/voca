@@ -229,11 +229,11 @@ function pick() {
     s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
   }
   // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
-  const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId });
+  const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId, groupOf: (id) => { const w = WORDS.get(id); return w ? (w.setId || '') + '|' + (w.page == null ? '' : w.page) : ''; } });
   if (!r) { s.finished = true; return; }
   ui.cur = r.id;
   afterPick();
-  if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
+  if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown && counts(now).left <= 0) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
 // 이전 단어로 돌아가기: 마지막 평가를 취소하고(카드 상태, 복습 기록, 오늘/세션 집계를 되돌려요) 그 단어를 다시 보여 줘요.
 function undo() {

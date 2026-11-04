@@ -145,7 +145,8 @@ export function shouldIntroduceNew(sinceNew, reviewsLeft, newLeft) {
 // 돌려주는 값: { id, kind } 또는 (볼 카드가 하나도 없을 때만) null.
 //  kind: learn(학습 중) / new / review  → 오늘의 할 일
 //        bonus-new / bonus-learn / bonus-review → 오늘 할 일을 모두 마친 뒤 멈추지 않고 이어가는 카드
-export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId }) {
+export const LEARN_CAP = 8;   // 아직 익히는 중(학습 단계)인 단어가 이만큼 쌓이면 새 단어를 멈추고 먼저 익혀요
+export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId, groupOf }) {
   const learn = [], rev = [], news = [], later = [], early = [];
   for (const id of order) {
     const c = cards.get(id);
@@ -153,18 +154,27 @@ export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId }) {
     if (c.due <= now) (c.phase === 'learn' ? learn : rev).push(id);
     else (c.phase === 'learn' ? later : early).push(id);
   }
+  // 익히기 전에는 새 단어로 넘어가지 않아요: ① 익히는 중인 단어가 LEARN_CAP 개 이상이거나
+  // ② 다음 묶음(예: 다음 Day)의 새 단어로 넘어가려는데 앞 묶음에 아직 익히는 중인 단어가 남아 있으면 새 단어를 멈춰요.
+  const inLearn = learn.length + later.length;
+  let hold = inLearn >= LEARN_CAP;
+  if (!hold && inLearn && news.length && groupOf) {
+    const g = groupOf(news[0]);
+    hold = learn.concat(later).some((id) => groupOf(id) !== g);
+  }
   const byDue = (a, b) => cards.get(a).due - cards.get(b).due;
   learn.sort(byDue);
   rev.sort((a, b) => urgency(cards.get(b), now) - urgency(cards.get(a), now));
-  const nl = Math.min(news.length, Math.max(0, newLeft));
+  const nl = hold ? 0 : Math.min(news.length, Math.max(0, newLeft));
   // 오늘의 할 일: ① 학습 중 → ② 새 단어를 복습 사이에 섞기 → ③ 잊을 위험이 큰 복습
   if (learn.length) return { id: learn[0], kind: 'learn' };
   if (shouldIntroduceNew(sinceNew, rev.length, nl)) return { id: news[0], kind: 'new' };
   if (rev.length) return { id: rev[0], kind: 'review' };
   // 할 일을 모두 마쳐도 멈추지 않고 이어가요: ④ 다음 새 단어 → ⑤ 곧 볼 학습 카드 → ⑥ 가장 가까운 복습(앞당겨)
   // 방금 푼 카드는 다른 카드가 있으면 뒤로 미뤄서 같은 카드가 바로 또 나오지 않게 해요.
-  if (news.length) return { id: news[0], kind: 'bonus-new' };
   const first = (arr) => arr.find((id) => id !== lastId) || arr[0];
+  if (hold && later.length) { later.sort(byDue); return { id: first(later), kind: 'bonus-learn' }; }   // 새 단어를 멈춘 동안에는 익히는 중인 카드를 먼저 다시 보여 줘요
+  if (news.length && !hold) return { id: news[0], kind: 'bonus-new' };
   if (later.length) { later.sort(byDue); return { id: first(later), kind: 'bonus-learn' }; }
   if (early.length) { early.sort(byDue); return { id: first(early), kind: 'bonus-review' }; }
   return null;
