@@ -226,13 +226,14 @@ function pick() {
   resetTimers();
   if (s.mode === 'leech') {
     while (s.q.length && !WORDS.has(s.q[0])) s.q.shift();
-    if (s.q.length) { ui.cur = s.q.shift(); afterPick(); return; }
+    if (s.q.length) { ui.cur = s.q.shift(); ui.curKind = 'learn'; afterPick(); return; }
     s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
   }
   // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
-  const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId, groupOf: (id) => { const w = WORDS.get(id); return w ? (w.setId || '') + '|' + (w.page == null ? '' : w.page) : ''; } });
+  const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId, recent: s.recent || [], groupOf: (id) => { const w = WORDS.get(id); return w ? (w.setId || '') + '|' + (w.page == null ? '' : w.page) : ''; } });
   if (!r) { s.finished = true; return; }
-  ui.cur = r.id;
+  ui.cur = r.id; ui.curKind = r.kind;
+  (s.recent = s.recent || []).push({ id: r.id, kind: r.kind }); if (s.recent.length > 8) s.recent.shift();
   afterPick();
   if (r.kind.indexOf('bonus') === 0 && s.done > 0 && !s.goalShown && counts(now).left <= 0) { s.goalShown = true; toast('오늘 목표를 다 채웠어요! 이어서 계속할게요.'); }
 }
@@ -242,6 +243,7 @@ function undo() {
   const u = s.stack.pop();
   clearTimeout(revealTimer);
   if (s.mode === 'leech' && ui.cur && ui.cur !== u.id) s.q.unshift(ui.cur);   // 집중 복습 중이면 아직 안 푼 현재 카드를 목록 맨 앞에 되돌려 놔요
+  if (s.recent) { s.recent.pop(); if (ui.cur !== u.id) s.recent.pop(); s.recent.push({ id: u.id, kind: u.kind }); }   // 최근에 나온 카드 목록도 되돌려요
   if (u.prev) CARDS.set(u.id, u.prev); else CARDS.delete(u.id);
   S.queueCard(USER.id, u.id, u.prev || blank());
   S.dropLog(u.logId);
@@ -265,7 +267,7 @@ function rate(r, hold) {
   // 되돌리기용 스냅샷: 평가 전의 카드, 오늘 집계, 세션 집계를 보관해요
   const logId = uuid(), dayKey = ymd(t);
   s.stack = s.stack || [];
-  s.stack.push({ id, prev, logId, dayKey, dd: Object.assign(emptyDay(), DAILY.get(dayKey)), dir: ui.curDir, quiz: ui.curQuiz,
+  s.stack.push({ id, prev, logId, dayKey, dd: Object.assign(emptyDay(), DAILY.get(dayKey)), dir: ui.curDir, quiz: ui.curQuiz, kind: ui.curKind || 'review',
     ses: { done: s.done, w: s.w, c: s.c, r: s.r, u: s.u, k: s.k, nw: s.nw, sinceNew: s.sinceNew, lastId: s.lastId } });
   if (s.stack.length > 30) s.stack.shift();
   const next = schedule(prev, r, t, { scale: SET.scale });

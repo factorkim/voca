@@ -142,11 +142,18 @@ export function shouldIntroduceNew(sinceNew, reviewsLeft, newLeft) {
 //  order    : 공부할 단어 id 목록 (순서대로)
 //  cards    : id -> 카드 상태 (없거나 phase 가 'new' 면 새 단어)
 //  newLeft  : 오늘 더 보여 줄 새 단어 수(예산)    sinceNew : 마지막 새 단어 뒤에 푼 카드 수    lastId : 방금 푼 카드
+//  recent   : 최근에 보여 준 카드들 [{ id, kind }] (오래된 것부터). 같은 종류가 몰려 나오지 않게 섞는 데 써요.
+//  groupOf  : id -> 묶음(예: Day). 있으면 앞 묶음에 익히는 중인 단어가 남아 있을 때 다음 묶음의 새 단어로 넘어가지 않아요.
 // 돌려주는 값: { id, kind } 또는 (볼 카드가 하나도 없을 때만) null.
 //  kind: learn(학습 중) / new / review  → 오늘의 할 일
 //        bonus-new / bonus-learn / bonus-review → 오늘 할 일을 모두 마친 뒤 멈추지 않고 이어가는 카드
-export const LEARN_CAP = 8;   // 아직 익히는 중(학습 단계)인 단어가 이만큼 쌓이면 새 단어를 멈추고 먼저 익혀요
-export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId, groupOf }) {
+//
+// 후보(새 단어 / 학습 중 / 복습 / 앞당긴 복습)마다 점수를 매겨 가장 높은 것을 골라요. 종류별 기본 점수는 '시간이 된 학습 중 > 새 단어(차례일 때) > 복습 > 곧 볼 학습 중 > 앞당긴 복습' 순이고,
+// 같은 종류가 연달아 나오거나 방금 본 카드가 또 나오면 점수를 깎아서, 새 단어·학습 중·복습이 자연스럽게 섞여 나와요.
+export const LEARN_CAP = 12;   // 아직 익히는 중인 단어가 이만큼 쌓이면 새 단어를 덜 내요 (완전히 막지는 않아요)
+const klass = (k) => (k === 'new' || k === 'bonus-new' ? 'n' : (k === 'learn' || k === 'bonus-learn' ? 'l' : 'r'));
+const stubborn = (c) => { const h = (c.hist || []).slice(-6); return h.filter((x) => x[1] === 'u' || x[1] === 'w').length >= 4; };   // 계속 틀리는 카드는 다음 묶음으로 넘어가는 걸 막지 않아요
+export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId, groupOf, recent = [] }) {
   const learn = [], rev = [], news = [], later = [], early = [];
   for (const id of order) {
     const c = cards.get(id);
@@ -154,30 +161,43 @@ export function chooseNext({ order, cards, now, newLeft, sinceNew, lastId, group
     if (c.due <= now) (c.phase === 'learn' ? learn : rev).push(id);
     else (c.phase === 'learn' ? later : early).push(id);
   }
-  // 익히기 전에는 새 단어로 넘어가지 않아요: ① 익히는 중인 단어가 LEARN_CAP 개 이상이거나
-  // ② 다음 묶음(예: 다음 Day)의 새 단어로 넘어가려는데 앞 묶음에 아직 익히는 중인 단어가 남아 있으면 새 단어를 멈춰요.
   const inLearn = learn.length + later.length;
-  let hold = inLearn >= LEARN_CAP;
-  if (!hold && inLearn && news.length && groupOf) {
+  // 앞 묶음에서 처음 익히는 중인 단어(계속 틀리는 것 제외)가 남아 있으면 다음 묶음의 새 단어로는 넘어가지 않아요.
+  let gate = false;
+  if (news.length && groupOf && inLearn) {
     const g = groupOf(news[0]);
-    hold = learn.concat(later).some((id) => groupOf(id) !== g);
+    gate = learn.concat(later).some((id) => { const c = cards.get(id); return groupOf(id) !== g && !(c.lapses > 0) && !stubborn(c); });   // 복습하다 잊어서 다시 익히는 카드는 막지 않아요
   }
   const byDue = (a, b) => cards.get(a).due - cards.get(b).due;
-  learn.sort(byDue);
+  learn.sort(byDue); later.sort((a, b) => cards.get(a).last - cards.get(b).last); early.sort(byDue);
   rev.sort((a, b) => urgency(cards.get(b), now) - urgency(cards.get(a), now));
-  const nl = hold ? 0 : Math.min(news.length, Math.max(0, newLeft));
-  // 오늘의 할 일: ① 학습 중 → ② 새 단어를 복습 사이에 섞기 → ③ 잊을 위험이 큰 복습
-  if (learn.length) return { id: learn[0], kind: 'learn' };
-  if (shouldIntroduceNew(sinceNew, rev.length, nl)) return { id: news[0], kind: 'new' };
-  if (rev.length) return { id: rev[0], kind: 'review' };
-  // 할 일을 모두 마쳐도 멈추지 않고 이어가요: ④ 다음 새 단어 → ⑤ 곧 볼 학습 카드 → ⑥ 가장 가까운 복습(앞당겨)
-  // 방금 푼 카드는 다른 카드가 있으면 뒤로 미뤄서 같은 카드가 바로 또 나오지 않게 해요.
-  const first = (arr) => arr.find((id) => id !== lastId) || arr[0];
-  if (hold && later.length) { later.sort(byDue); return { id: first(later), kind: 'bonus-learn' }; }   // 새 단어를 멈춘 동안에는 익히는 중인 카드를 먼저 다시 보여 줘요
-  if (news.length && !hold) return { id: news[0], kind: 'bonus-new' };
-  if (later.length) { later.sort(byDue); return { id: first(later), kind: 'bonus-learn' }; }
-  if (early.length) { early.sort(byDue); return { id: first(early), kind: 'bonus-review' }; }
-  return null;
+  const nl = Math.min(news.length, Math.max(0, newLeft));
+  const pace = nl > 0 && shouldIntroduceNew(sinceNew, rev.length, nl);
+
+  const cand = [];
+  if (news.length && !gate) {
+    let sc = pace ? 90 : (nl > 0 ? 20 : 10);
+    if (inLearn >= LEARN_CAP) sc -= 120;
+    cand.push({ id: news[0], kind: nl > 0 ? 'new' : 'bonus-new', sc });
+  }
+  learn.slice(0, 3).forEach((id) => cand.push({ id, kind: 'learn', sc: 100 + Math.min(30, (now - cards.get(id).due) / MIN) }));
+  later.slice(0, 3).forEach((id) => { const age = (now - cards.get(id).last) / MIN; cand.push({ id, kind: 'bonus-learn', sc: 30 + Math.min(30, age) - (age < 0.5 ? 40 : 0) }); });
+  rev.slice(0, 3).forEach((id) => cand.push({ id, kind: 'review', sc: 55 + Math.min(30, urgency(cards.get(id), now) * 10) }));
+  early.slice(0, 2).forEach((id) => cand.push({ id, kind: 'bonus-review', sc: 8 - ((now - cards.get(id).last) < 30 * MIN ? 400 : 0) }));   // 방금 푼 카드를 또 앞당겨 보여 주지 않아요(다른 카드가 있을 때)
+  if (!cand.length) return null;
+
+  // 섞기: 최근에 나온 종류가 반복되거나 방금 본 카드가 또 나오면 점수를 깎아요
+  const last = recent[recent.length - 1], lastK = last ? klass(last.kind) : null;
+  let run = 0; for (let i = recent.length - 1; i >= 0 && klass(recent[i].kind) === lastK; i--) run++;
+  const recentIds = recent.map((r) => r.id);
+  for (const x of cand) {
+    if (klass(x.kind) === lastK) x.sc -= run >= 3 ? 300 : (run === 2 ? 120 : 10);
+    const pos = recentIds.lastIndexOf(x.id);
+    if (pos >= 0) { const back = recentIds.length - pos; x.sc -= back === 1 ? 900 : (back === 2 ? 300 : (back <= 4 ? 80 : 0)); }
+    if (x.id === lastId) x.sc -= 900;
+  }
+  cand.sort((a, b) => b.sc - a.sc);
+  return { id: cand[0].id, kind: cand[0].kind };
 }
 
 // 같은 묶음(예: 같은 Day)에 속한 '연속된' 단어끼리만 섞어요. 묶음 순서와 묶음의 위치는 그대로 유지돼요.
