@@ -210,6 +210,7 @@ function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.h
 function afterPick() {
   const id = ui.cur, w = WORDS.get(id);
   ui.held = false; ui.wtext = ''; ui.wres = null;
+  wShown.delete(id);   // 쓰기 퀴즈에서 알려 줄 글자를 새로 뽑아요
   prefetchWords(id);
   // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
   const c = CARDS.get(id), seen = c && c.phase !== 'new';
@@ -493,12 +494,20 @@ function exHtml(ex, en) {
 }
 
 /* ---------- 쓰기 퀴즈 ---------- */
-// 뜻을 보고 영어 단어를 써요. 마지막 두 글자(4글자 이하면 마지막 한 글자)를 알려 주고, 나머지 앞 글자들을 입력해요. 시간 제한은 없어요.
+// 뜻을 보고 영어 단어를 써요. 첫 글자를 뺀 나머지 중에서 무작위로 두 글자(4글자 이하면 한 글자)를 알려 주고, 나머지 빈칸을 입력해요. 시간 제한은 없어요.
+// 알려 주는 글자는 카드가 나올 때마다 새로 뽑고, 같은 카드를 보는 동안은 그대로예요.
+const wShown = new Map();
 function writeInfo(w) {
   const chars = String(w.en || '').trim().split('');
   const li = []; chars.forEach((ch, i) => { if (/[A-Za-z]/.test(ch)) li.push(i); });
   if (li.length < 2) return null;
-  const shown = new Set([li[li.length - 1]]); if (li.length > 4) shown.add(li[li.length - 2]);
+  let pick = wShown.get(w.id);
+  if (!pick) {
+    const pool = li.slice(1), k = li.length > 4 ? 2 : 1; pick = [];
+    while (pick.length < k && pool.length) pick.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    wShown.set(w.id, pick);
+  }
+  const shown = new Set(pick);
   const hidden = li.filter((i) => !shown.has(i));
   if (!hidden.length) return null;
   return { chars, hidden, shown, exp: hidden.map((i) => chars[i].toLowerCase()).join(''), n: hidden.length, two: li.length > 4, plain: li.length === chars.length };
@@ -610,7 +619,7 @@ function answerExtras(w, c) {
 function writeCard(bar, w, c, tags) {
   const info = writeInfo(w), pos = w.pos ? '<p class="pos">' + esc(w.pos) + '</p>' : '';
   if (!ui.held) {
-    const hint = (info.two ? '마지막 두 글자' : '마지막 글자') + '가 주어져요. 빈칸 ' + info.n + '글자를 키보드로 바로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
+    const hint = '무작위 ' + (info.two ? '두 글자' : '한 글자') + '가 주어져요(첫 글자는 빼고). 빈칸 ' + info.n + '글자를 키보드로 바로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
     return bar + '<section class="card">' + tags + '<div class="front"><p class="eyebrow">뜻을 보고 영어로 써 보세요</p><h1 class="head-ko">' + esc(w.ko) + '</h1>' + pos +
       '<label class="pat" id="pat" for="wans" role="img" aria-label="' + esc('힌트: ' + info.chars.map((ch, i) => (info.shown.has(i) || !/[A-Za-z]/.test(ch) ? ch : '빈칸')).join(' ')) + '">' + patternHtml(info, null, ui.wtext) + '</label>' +
       '<input id="wans" class="wans" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="' + info.n + '" aria-label="빈칸에 들어갈 ' + info.n + '글자" value="' + esc(ui.wtext) + '">' +
