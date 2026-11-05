@@ -493,15 +493,15 @@ function exHtml(ex, en) {
 }
 
 /* ---------- 쓰기 퀴즈 ---------- */
-// 뜻을 보고 영어 단어를 써요. 첫 글자(5글자 이상이면 마지막 글자도)를 알려 주고, 가운데 빈칸을 입력해요. 시간 제한은 없어요.
+// 뜻을 보고 영어 단어를 써요. 마지막 두 글자(4글자 이하면 마지막 한 글자)를 알려 주고, 나머지 앞 글자들을 입력해요. 시간 제한은 없어요.
 function writeInfo(w) {
   const chars = String(w.en || '').trim().split('');
   const li = []; chars.forEach((ch, i) => { if (/[A-Za-z]/.test(ch)) li.push(i); });
   if (li.length < 2) return null;
-  const shown = new Set([li[0]]); if (li.length > 4) shown.add(li[li.length - 1]);
+  const shown = new Set([li[li.length - 1]]); if (li.length > 4) shown.add(li[li.length - 2]);
   const hidden = li.filter((i) => !shown.has(i));
   if (!hidden.length) return null;
-  return { chars, hidden, shown, exp: hidden.map((i) => chars[i].toLowerCase()).join(''), n: hidden.length, both: li.length > 4, plain: li.length === chars.length };
+  return { chars, hidden, shown, exp: hidden.map((i) => chars[i].toLowerCase()).join(''), n: hidden.length, two: li.length > 4, plain: li.length === chars.length };
 }
 // 맞은 글자 수로 채점해요: 전부 맞으면 맞았음, 절반 이상 맞으면 비슷함, 그보다 적으면 틀림
 function gradeWrite(info, typed) {
@@ -610,7 +610,7 @@ function answerExtras(w, c) {
 function writeCard(bar, w, c, tags) {
   const info = writeInfo(w), pos = w.pos ? '<p class="pos">' + esc(w.pos) + '</p>' : '';
   if (!ui.held) {
-    const hint = (info.both ? '첫 글자와 마지막 글자' : '첫 글자') + '가 주어져요. 빈칸 ' + info.n + '글자를 키보드로 바로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
+    const hint = (info.two ? '마지막 두 글자' : '마지막 글자') + '가 주어져요. 빈칸 ' + info.n + '글자를 키보드로 바로 써요.' + (info.plain ? '' : ' (띄어쓰기·하이픈은 빼고)') + ' 시간 제한은 없어요.';
     return bar + '<section class="card">' + tags + '<div class="front"><p class="eyebrow">뜻을 보고 영어로 써 보세요</p><h1 class="head-ko">' + esc(w.ko) + '</h1>' + pos +
       '<label class="pat" id="pat" for="wans" role="img" aria-label="' + esc('힌트: ' + info.chars.map((ch, i) => (info.shown.has(i) || !/[A-Za-z]/.test(ch) ? ch : '빈칸')).join(' ')) + '">' + patternHtml(info, null, ui.wtext) + '</label>' +
       '<input id="wans" class="wans" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="' + info.n + '" aria-label="빈칸에 들어갈 ' + info.n + '글자" value="' + esc(ui.wtext) + '">' +
