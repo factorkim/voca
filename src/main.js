@@ -476,6 +476,8 @@ function autoSpeak(id) {
 }
 
 // 예문 속 해당 단어(-s, -ed, -ing 같은 활용형 포함)를 굵게 보여 줘요. 못 찾으면 그대로 둬요.
+const IRREG = { get: 'got|gotten', go: 'went|gone', make: 'made', take: 'took|taken', come: 'came', give: 'gave|given', bring: 'brought', keep: 'kept', hold: 'held', hear: 'heard', see: 'saw|seen', run: 'ran', show: 'showed|shown', stand: 'stood', pay: 'paid', tell: 'told', think: 'thought', find: 'found', buy: 'bought', feel: 'felt', leave: 'left', lose: 'lost', meet: 'met', speak: 'spoke|spoken', break: 'broke|broken', write: 'wrote|written', begin: 'began|begun', catch: 'caught', teach: 'taught', sleep: 'slept', freeze: 'froze|frozen', draw: 'drew|drawn', grow: 'grew|grown', know: 'knew|known', throw: 'threw|thrown', fall: 'fell|fallen', fly: 'flew|flown', sell: 'sold', send: 'sent', spend: 'spent', build: 'built', lead: 'led', read: 'read', sit: 'sat', win: 'won', wear: 'wore|worn', choose: 'chose|chosen', forget: 'forgot|forgotten', eat: 'ate|eaten', drink: 'drank|drunk', ride: 'rode|ridden', rise: 'rose|risen', hide: 'hid|hidden', bear: 'bore|borne', lend: 'lent', mean: 'meant', say: 'said', do: 'did|done', have: 'had|has' };
+// 예문 속 해당 단어/숙어(-s, -ed, -ing, 불규칙 변화, one's→my 같은 바뀐 말 포함)를 굵게 보여 줘요. 못 찾으면 그대로 둬요.
 function exHtml(ex, en) {
   const text = String(ex || ''), word = String(en || '').trim().toLowerCase();
   if (!word) return esc(text);
@@ -485,9 +487,19 @@ function exHtml(ex, en) {
     if (t.length > 3 && t.endsWith('e')) a.push(t.slice(0, -1));
     if (t.length > 3 && t.endsWith('y')) a.push(t.slice(0, -1) + 'i');
     if (t.length > 3 && /[bdgmnprt]$/.test(t) && !/[aeiou]{2}[bdgmnprt]$/.test(t)) a.push(t + t.slice(-1));
+    for (const k of Object.keys(IRREG)) if (t.endsWith(k)) IRREG[k].split('|').forEach((f) => a.push(t.slice(0, -k.length) + f));   // overslept, got, took ...
     return a.map(rx).join('|');
   };
-  const pat = word.split(/[\s-]+/).filter(Boolean).map((p) => '(?:' + forms(p) + ')[a-z]{0,4}').join('[\\s-]+');
+  let toks = word.split(/[\s-]+/).filter(Boolean);
+  if (toks.length > 1 && toks[0] === 'be') toks = toks.slice(1);   // be aware of -> were aware of / 'm aware of
+  let pat = '';
+  toks.forEach((t, i) => {
+    if (/^(someone|something|somebody|a|b)$/.test(t) && toks.length > 1 && i > 0) pat += "(?:[\\s-]+[a-z\u2019']+){0,2}";   // someone / something / A / B 자리에 들어간 말
+    else {
+      const w = /^one['\u2019]s$/.test(t) ? "(?:my|your|his|her|their|our|its|one['\u2019]s|[a-z]+['\u2019]s)" : '(?:' + forms(t) + ')[a-z]{0,4}';
+      pat += (i ? '[\\s-]+' : '') + w;
+    }
+  });
   let m = null;
   try { m = new RegExp('(^|[^A-Za-z])(' + pat + ')(?![A-Za-z])', 'i').exec(text); } catch (e) { m = null; }
   if (!m) return esc(text);
