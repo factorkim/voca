@@ -155,6 +155,8 @@ function dayBacklog(day, current) {
   try { localStorage.setItem(key, JSON.stringify({ day, n: current })); } catch (e) { /* 무시 */ }
   return current;
 }
+// 자주 틀리는 단어: 여러 번 잊었고(LEECH 번 이상), 최근 두 번 연속으로 맞히지는 못한 단어예요. 다시 연속으로 맞히면 목록에서 빠져요.
+const isLeech = (c) => !!c && (c.lapses || 0) >= LEECH && !((c.hist || []).length >= 2 && (c.hist || []).slice(-2).every((x) => x[1] === 'r' || x[1] === 'k'));
 function counts(now) {
   const n = { new: 0, learn: 0, young: 0, mature: 0 }; let dueReview = 0, dueLearn = 0, soon = 0; const leech = [];
   ORDER.forEach((id) => {
@@ -162,7 +164,7 @@ function counts(now) {
     if (b === 'new') return;
     if (c.due <= now) { if (c.phase === 'learn') dueLearn++; else dueReview++; }
     else if (c.phase === 'learn' && c.due - now <= 30 * MIN) soon++;
-    if ((c.lapses || 0) >= LEECH) leech.push(id);
+    if (isLeech(c)) leech.push(id);
   });
   leech.sort((a, b) => CARDS.get(b).lapses - CARDS.get(a).lapses);
   const used = todayLog(now).nw || 0, day = ymd(now);
@@ -202,7 +204,7 @@ function nextInfo(now) {
 /* ---------- 학습 세션 ---------- */
 function startSession(mode) {
   ui.session = { id: uuid(), mode: mode || 'daily', startedAt: Date.now(), done: 0, w: 0, c: 0, r: 0, u: 0, k: 0, nw: 0, sinceNew: 0, lastId: null, goalShown: false, q: null, finished: false };
-  if (ui.session.mode === 'leech') ui.session.q = counts(Date.now()).leech.slice();
+  if (ui.session.mode === 'leech') { ui.session.q = counts(Date.now()).leech.slice(); ui.session.leechTotal = ui.session.q.length; ui.session.leechOk = new Set(); }   // 집중 복습: 이 단어들을 모두 맞힐 때까지 이어가요
   pick();
 }
 function resetTimers() { ui.shownAt = performance.now(); ui.revealedAt = 0; ui.hidden = false; ui.speaks = 0; }
@@ -212,11 +214,11 @@ function afterPick() {
   ui.held = false; ui.wtext = ''; ui.wres = null;
   wShown.delete(id);   // 쓰기 퀴즈에서 알려 줄 글자를 새로 뽑아요
   prefetchWords(id);
-  // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
   const c = CARDS.get(id), seen = c && c.phase !== 'new';
   // 몰랐음으로 평가한 단어는 다음에 나올 때 퀴즈 종류와 상관없이 읽기 퀴즈로 다시 봐요 (뜻과 철자를 먼저 눈으로 익히도록)
   const lastU = !!(c && c.hist && c.hist.length && c.hist[c.hist.length - 1][1] === 'u');
-  const wantWrite = !lastU && (ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5));
+  // 쓰기 퀴즈: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 모두 쓰기. 섞어서: 이미 본 단어만 읽기/쓰기를 반반
+  const wantWrite = seen && !lastU && (ui.quiz === 'write' || (ui.quiz === 'mix' && Math.random() < 0.5));
   ui.curQuiz = wantWrite && w && writeInfo(w) ? 'write' : 'read';
   if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); ui.revealEnd = 0; return; }
   armAutoReveal(id);
@@ -230,7 +232,7 @@ function pick() {
   if (s.mode === 'leech') {
     while (s.q.length && !WORDS.has(s.q[0])) s.q.shift();
     if (s.q.length) { ui.cur = s.q.shift(); ui.curKind = 'learn'; afterPick(); return; }
-    s.mode = 'daily';   // 집중 복습을 마치면 멈추지 않고 오늘의 학습으로 이어가요
+    s.finished = true; return;   // 집중 복습은 목록의 단어를 모두 맞히면 끝나요 (오늘의 학습은 마무리 화면에서 이어갈 수 있어요)
   }
   // 세션은 멈추지 않아요. 오늘 할 일을 모두 마쳐도 다음 새 단어 → 곧 볼 카드 → 앞당긴 복습 순으로 계속 이어져요. (규칙은 sched.js 의 chooseNext)
   const r = chooseNext({ order: STUDY, cards: CARDS, now, newLeft: counts(now).newAvail, sinceNew: s.sinceNew, lastId: s.lastId, recent: s.recent || [], groupOf: (id) => { const w = WORDS.get(id); return w ? (w.setId || '') + '|' + (w.page == null ? '' : w.page) : ''; } });
@@ -245,7 +247,7 @@ function undo() {
   const s = ui.session; if (!s || !s.stack || !s.stack.length || !USER) return;
   const u = s.stack.pop();
   clearTimeout(revealTimer);
-  if (s.mode === 'leech' && ui.cur && ui.cur !== u.id) s.q.unshift(ui.cur);   // 집중 복습 중이면 아직 안 푼 현재 카드를 목록 맨 앞에 되돌려 놔요
+  if (u.leech) { s.q = u.leech.q.slice(); s.leechOk = new Set(u.leech.ok); }   // 집중 복습 목록도 평가 전으로 되돌려요
   if (s.recent) { s.recent.pop(); if (ui.cur !== u.id) s.recent.pop(); s.recent.push({ id: u.id, kind: u.kind }); }   // 최근에 나온 카드 목록도 되돌려요
   if (u.prev) CARDS.set(u.id, u.prev); else CARDS.delete(u.id);
   S.queueCard(USER.id, u.id, u.prev || blank());
@@ -271,7 +273,8 @@ function rate(r, hold) {
   const logId = uuid(), dayKey = ymd(t);
   s.stack = s.stack || [];
   s.stack.push({ id, prev, logId, dayKey, dd: Object.assign(emptyDay(), DAILY.get(dayKey)), dir: ui.curDir, quiz: ui.curQuiz, kind: ui.curKind || 'review',
-    ses: { done: s.done, w: s.w, c: s.c, r: s.r, u: s.u, k: s.k, nw: s.nw, sinceNew: s.sinceNew, lastId: s.lastId } });
+    ses: { done: s.done, w: s.w, c: s.c, r: s.r, u: s.u, k: s.k, nw: s.nw, sinceNew: s.sinceNew, lastId: s.lastId },
+    leech: s.mode === 'leech' ? { q: s.q.slice(), ok: Array.from(s.leechOk) } : null });
   if (s.stack.length > 30) s.stack.shift();
   const next = schedule(prev, r, t, { scale: SET.scale });
   CARDS.set(id, next);
@@ -291,6 +294,7 @@ function rate(r, hold) {
     device: deviceInfo(), app_version: APP_VERSION
   });
 
+  if (s.mode === 'leech') { if (r === 'right' || r === 'known') s.leechOk.add(id); else s.q.splice(Math.min(s.q.length, 3), 0, id); }   // 맞히면 목록에서 빠지고, 아니면 몇 장 뒤에 다시 나와요
   s.lastId = id; s.done++; s[LETTER[r]]++; if (wasNew) { s.nw++; s.sinceNew = 0; } else s.sinceNew++;
   S.queueSession({
     id: s.id, user_id: USER.id, started_at: iso(s.startedAt), last_activity_at: iso(t), mode: s.mode, cards_done: s.done,
@@ -650,13 +654,18 @@ function writeCard(bar, w, c, tags) {
 function viewStudy() {
   const s = ui.session; if (!s) return viewLoading();
   const now = Date.now();
-  const left = s.mode === 'leech' ? (s.q.length + (ui.cur ? 1 : 0)) : counts(now).left;
-  const pct = s.done + left ? Math.round(s.done / (s.done + left) * 100) : 100;
-  const prog = left > 0 ? '오늘 ' + s.done + '장 · 남은 ' + left + '장' : '오늘 ' + s.done + '장 · 목표 달성';
+  const lc = s.mode === 'leech';
+  const left = lc ? s.leechTotal - s.leechOk.size : counts(now).left;
+  const pct = lc ? (s.leechTotal ? Math.round(s.leechOk.size / s.leechTotal * 100) : 100) : (s.done + left ? Math.round(s.done / (s.done + left) * 100) : 100);
+  const prog = lc ? '집중 복습 ' + s.leechOk.size + '/' + s.leechTotal + '개 맞힘' : (left > 0 ? '오늘 ' + s.done + '장 · 남은 ' + left + '장' : '오늘 ' + s.done + '장 · 목표 달성');
   const bar = '<div class="studybar"><span class="sb-l"><button class="btn ghost" data-act="go" data-r="home">← 나가기</button>' + (s.stack && s.stack.length ? '<button class="btn ghost" data-act="undo" title="마지막 평가를 취소하고 이전 단어로 돌아가요">↶ 이전 단어</button>' : '') + '</span><span class="prog">' + esc(prog) + '</span></div>' +
     '<div class="track" role="progressbar" aria-label="이번 학습 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><i style="width:' + pct + '%"></i></div>';
   if (!ui.cur) {
     const tot = s.u + s.w + s.c + s.r + s.k;
+    if (lc && tot) {
+      return bar + '<div class="state"><h2>집중 복습을 마쳤어요</h2><p>자주 틀리던 ' + s.leechTotal + '개를 모두 맞혔어요. (총 ' + tot + '번 풀었어요)</p><div class="sum">' + RATINGS.map((x) => '<div class="' + x.letter + '"><b>' + s[x.letter] + '</b><span>' + x.label + '</span></div>').join('') + '</div>' +
+        '<button class="btn primary block" data-act="start" style="margin-top:8px">오늘의 학습 이어서 하기</button><button class="btn block" data-act="go" data-r="home" style="margin-top:8px">홈으로</button></div>';
+    }
     return bar + '<div class="state"><h2>' + (tot ? '수고했어요' : '지금 볼 카드가 없어요') + '</h2>' +
       (tot ? '<p>' + tot + '장을 학습했어요. 정답률 ' + Math.round((s.r + s.k) / tot * 100) + '%</p><div class="sum">' + RATINGS.map((x) => '<div class="' + x.letter + '"><b>' + s[x.letter] + '</b><span>' + x.label + '</span></div>').join('') + '</div>' : '<p>' + (nextInfo(now) || '새 카드가 생기면 다시 알려 드릴게요.') + '</p>') +
       '<button class="btn primary block" data-act="go" data-r="home" style="margin-top:8px">홈으로</button></div>';
@@ -697,7 +706,7 @@ function matchWord(id) {
   if (ui.filter === 'new' && b !== 'new') return false;
   if (ui.filter === 'learn' && b !== 'learn' && b !== 'young') return false;
   if (ui.filter === 'known' && b !== 'mature') return false;
-  if (ui.filter === 'leech' && !(((c && c.lapses) || 0) >= LEECH)) return false;
+  if (ui.filter === 'leech' && !isLeech(c)) return false;
   const q = ui.q.trim().toLowerCase();
   if (q && (w.en || '').toLowerCase().indexOf(q) < 0 && (w.ko || '').toLowerCase().indexOf(q) < 0) return false;
   return true;
