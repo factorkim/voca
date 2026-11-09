@@ -214,11 +214,11 @@ function afterPick() {
   ui.held = false; ui.wtext = ''; ui.wres = null;
   wShown.delete(id);   // 쓰기 퀴즈에서 알려 줄 글자를 새로 뽑아요
   prefetchWords(id);
-  // 섞기: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 읽기/쓰기를 반반 섞어요
   const c = CARDS.get(id), seen = c && c.phase !== 'new';
   // 몰랐음으로 평가한 단어는 다음에 나올 때 퀴즈 종류와 상관없이 읽기 퀴즈로 다시 봐요 (뜻과 철자를 먼저 눈으로 익히도록)
   const lastU = !!(c && c.hist && c.hist.length && c.hist[c.hist.length - 1][1] === 'u');
-  const wantWrite = !lastU && (ui.quiz === 'write' || (ui.quiz === 'mix' && seen && Math.random() < 0.5));
+  // 쓰기 퀴즈: 처음 보는 단어는 읽기로 먼저 익히고, 이미 본 단어는 모두 쓰기. 섞어서: 이미 본 단어만 읽기/쓰기를 반반
+  const wantWrite = seen && !lastU && (ui.quiz === 'write' || (ui.quiz === 'mix' && Math.random() < 0.5));
   ui.curQuiz = wantWrite && w && writeInfo(w) ? 'write' : 'read';
   if (ui.curQuiz === 'write') { ui.curDir = 'ko2en'; clearTimeout(revealTimer); ui.revealEnd = 0; return; }
   armAutoReveal(id);
