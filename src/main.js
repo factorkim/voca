@@ -329,9 +329,10 @@ function wNext() { if (ui.held) { pick(); render(); } }
 // (2) 단어 앞에 쉼표를 붙여 짧은 쉼으로 시작해요. 기기가 소리 출력을 여는 동안 단어 앞부분이 아니라 이 쉼이 잘려요.
 // (3) 읽는 중이 아니면 터치/키 입력 안에서 바로 재생해요. 일부 브라우저(iOS 등)는 입력 직후가 아니면 소리를 막아요.
 // (4) 영어(미국) 목소리를 직접 고르고, 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
-let speakTimer = 0, warmed = false, curUtter = null, enVoice = null;
+let speakTimer = 0, warmed = false, curUtter = null, enVoice = null, voiceBad = false, lastErr = '';
 const canSpeak = () => 'speechSynthesis' in window;
 function pickVoice() {
+  if (voiceBad) { enVoice = null; return; }   // 한 번 실패한 목소리는 다시 고르지 않아요 (기기의 음성 엔진이 업데이트되며 목소리가 없어졌을 수 있어요)
   try { const v = window.speechSynthesis.getVoices(); enVoice = v.find((x) => x.lang === 'en-US' && x.localService) || v.find((x) => x.lang === 'en-US') || v.find((x) => /^en/i.test(x.lang)) || null; } catch (e) { /* 무시 */ }
 }
 if (canSpeak()) { pickVoice(); try { window.speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* 무시 */ } }
@@ -339,19 +340,34 @@ function warmUp() {
   if (warmed || !canSpeak()) return; warmed = true;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'en-US'; window.speechSynthesis.speak(u); } catch (e) { /* 무시 */ }
 }
-function speakNow(text, retried) {
+// 기기 음성: 목소리를 지정해 읽고, 실패하거나 시작하지 않으면 → 목소리를 지정하지 않고 → 꾸밈 없는 문장으로, 총 3번까지 시도해요. 끝내 안 되면 원인을 스피커 아래에 알려 줘요.
+function speakNow(text, tries) {
+  tries = tries || 0;
   const synth = window.speechSynthesis;
-  const u = new SpeechSynthesisUtterance(', ' + text); u.lang = 'en-US'; u.rate = 0.9; if (enVoice) u.voice = enVoice;
-  let started = false; u.onstart = () => { started = true; };
-  curUtter = u; u.onend = u.onerror = () => { started = true; if (curUtter === u) curUtter = null; };
-  synth.speak(u);
-  // 기기 음성 엔진이 멈춰 있으면 말을 시작하지 않아요. 잠시 기다려도 시작하지 않으면 한 번 다시 시도해요.
-  setTimeout(() => {
-    if (started || curUtter !== u) return;
+  const u = new SpeechSynthesisUtterance((tries < 2 ? ', ' : '') + text); u.lang = 'en-US'; u.rate = tries < 2 ? 0.9 : 1;
+  if (tries === 0 && enVoice) u.voice = enVoice;
+  let started = false, failed = false;
+  const retry = (why) => {
+    lastErr = why || lastErr;
+    if (tries === 0 && enVoice) { voiceBad = true; enVoice = null; }
+    if (tries < 2) speakNow(text, tries + 1); else setLast('기기 음성 — 실패 (' + (lastErr || '시작 신호 없음') + '). 기기 음량·무음 모드·음성 엔진을 확인해 주세요');
+  };
+  u.onstart = () => { started = true; };
+  u.onend = () => { started = true; if (curUtter === u) curUtter = null; };
+  u.onerror = (e) => {
+    const code = (e && e.error) || 'error';
+    if (curUtter === u) curUtter = null;
+    if (code === 'canceled' || code === 'interrupted') { started = true; return; }   // 우리가 끊은 것
+    if (failed) return; failed = true; retry(code);
+  };
+  curUtter = u;
+  try { synth.speak(u); } catch (e) { failed = true; retry('speak 호출 실패'); return; }
+  setTimeout(() => {   // 시작 신호가 없으면 엔진이 멈춘 것이니 한 번 깨워서 다시 시도해요
+    if (started || failed || curUtter !== u) return;
+    failed = true;
     try { synth.cancel(); } catch (e) { /* 무시 */ }
-    curUtter = null;
-    if (!retried) { try { synth.resume(); } catch (e) { /* 무시 */ } speakNow(text, true); }
-    else setLast('기기 음성 — 시작되지 않았어요 (기기 음량·무음 모드를 확인해 주세요)');
+    try { synth.resume(); } catch (e) { /* 무시 */ }
+    curUtter = null; retry('시작 신호 없음');
   }, 1800);
 }
 // 안드로이드는 기기 음성 엔진이 시작할 때 앞부분이 잘리는 경우가 많아요. 그래서 기본은 사전의 녹음된 발음(mp3)을 쓰고,
@@ -447,6 +463,23 @@ function playBuffer(buf) {
   const src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination); curSrc = src;
   src.start(c.currentTime + LEAD);
   return true;
+}
+// 소리가 안 날 때 원인을 좁히기 위한 정보 (설정의 '발음 확인'에 표시돼요)
+function speakDiag() {
+  const p = [];
+  try { p.push('음성 엔진: ' + (canSpeak() ? '목소리 ' + window.speechSynthesis.getVoices().length + '개' + (enVoice ? ' (' + enVoice.name + ')' : ' (기본 목소리)') : '없음')); } catch (e) { p.push('음성 엔진: 확인 실패'); }
+  p.push('웹 오디오: ' + (actx ? actx.state : '아직 안 만듦'));
+  if (lastErr) p.push('마지막 기기 음성 오류: ' + lastErr);
+  return p.join(' · ');
+}
+// 삐 소리: 기기의 소리 출력(음량·무음·블루투스)이 살아 있는지 앱 음성과 상관없이 확인해요
+function beep() {
+  return ensureRunning().then((ok) => {
+    if (!ok || !actx) return '웹 오디오를 쓸 수 없어요 (' + (actx ? actx.state : '없음') + ')';
+    const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = 880; g.gain.value = 0.25;
+    o.connect(g); g.connect(actx.destination); o.start(actx.currentTime + 0.1); o.stop(actx.currentTime + 0.6);
+    return '삐 소리를 냈어요. 들렸나요? 안 들리면 기기의 미디어 음량·무음 모드·블루투스 연결을 확인해 주세요. 들렸는데 단어 소리만 안 나면 음성 쪽 문제예요.';
+  });
 }
 function prefetchWords(id) {   // 지금 단어와 곧 나올 새 단어 몇 개의 발음을 미리 받아 둬요
   if (audioSrc() !== 'dict') return;
@@ -820,7 +853,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
-    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p><label class="field" for="noteSel"><span>재생 방식 표시</span><select id="noteSel"><option value="1"' + (noteOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (noteOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button><button class="btn" data-act="beepTest">소리 테스트 (삐)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p><label class="field" for="noteSel"><span>재생 방식 표시</span><select id="noteSel"><option value="1"' + (noteOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (noteOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -974,7 +1007,8 @@ document.addEventListener('click', (e) => {
   else if (a === 'start') { warmUp(); keepAlive(true); go('study', 'daily'); }
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
-  else if (a === 'speakTest') { audioCtx(); speak('abandon'); setTimeout(() => { const el = $('#speakInfo'); if (el) el.textContent = '방금 재생: ' + (lastSpeak || '재생하지 못했어요'); }, 1800); }
+  else if (a === 'speakTest') { audioCtx(); speak('abandon'); setTimeout(() => { const el = $('#speakInfo'); if (el) el.textContent = '방금 재생: ' + (lastSpeak || '재생하지 못했어요') + ' / ' + speakDiag(); }, 2200); }
+  else if (a === 'beepTest') { beep().then((m) => { const el = $('#speakInfo'); if (el) el.textContent = m + ' / ' + speakDiag(); }); }
   else if (a === 'undo') undo();
   else if (a === 'wCheck') wCheck();
   else if (a === 'wUnknown') wFinish('unknown', true);
