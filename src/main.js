@@ -329,46 +329,59 @@ function wNext() { if (ui.held) { pick(); render(); } }
 // (2) 단어 앞에 쉼표를 붙여 짧은 쉼으로 시작해요. 기기가 소리 출력을 여는 동안 단어 앞부분이 아니라 이 쉼이 잘려요.
 // (3) 읽는 중이 아니면 터치/키 입력 안에서 바로 재생해요. 일부 브라우저(iOS 등)는 입력 직후가 아니면 소리를 막아요.
 // (4) 영어(미국) 목소리를 직접 고르고, 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
-let speakTimer = 0, warmed = false, curUtter = null, enVoice = null, voiceBad = false, lastErr = '';
+let speakTimer = 0, warmed = false, curUtter = null, lastErr = '', lastVoice = '', lastDictWhy = '';
+const failedVoices = new Set();
 const canSpeak = () => 'speechSynthesis' in window;
-function pickVoice() {
-  if (voiceBad) { enVoice = null; return; }   // 한 번 실패한 목소리는 다시 고르지 않아요 (기기의 음성 엔진이 업데이트되며 목소리가 없어졌을 수 있어요)
-  try { const v = window.speechSynthesis.getVoices(); enVoice = v.find((x) => x.lang === 'en-US' && x.localService) || v.find((x) => x.lang === 'en-US') || v.find((x) => /^en/i.test(x.lang)) || null; } catch (e) { /* 무시 */ }
+const voiceKey = (v) => (v && (v.voiceURI || v.name)) || '';
+// 시도할 목소리 목록: 지난번에 성공한 목소리 → 영어(미국) 기기 내장 → 영어(미국) 온라인 → 영국 영어 → 그 밖의 영어, 실패한 목소리는 빼고 최대 3개. 마지막은 목소리를 지정하지 않는 기본 목소리예요.
+// (기기 음성 엔진이 바뀌어 어떤 목소리가 synthesis-failed 를 내도, 다른 목소리로는 읽히는 경우가 많아요.)
+function buildVoiceList() {
+  let all = [];
+  try { all = window.speechSynthesis.getVoices() || []; } catch (e) { all = []; }
+  let saved = ''; try { saved = localStorage.getItem('voca.voice') || ''; } catch (e) { /* 무시 */ }
+  const en = all.filter((x) => /^en/i.test(x.lang) && !failedVoices.has(voiceKey(x)));
+  const rank = (x) => (voiceKey(x) === saved ? 0 : x.lang === 'en-US' && x.localService ? 1 : x.lang === 'en-US' ? 2 : x.lang === 'en-GB' ? 3 : 4);
+  en.sort((a, b) => rank(a) - rank(b));
+  const seen = new Set(), list = [];
+  for (const v of en) { const k = voiceKey(v); if (seen.has(k)) continue; seen.add(k); list.push(v); if (list.length >= 3) break; }
+  list.push(null);
+  return list;
 }
-if (canSpeak()) { pickVoice(); try { window.speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* 무시 */ } }
+if (canSpeak()) { try { window.speechSynthesis.getVoices(); } catch (e) { /* 무시 */ } }
 function warmUp() {
   if (warmed || !canSpeak()) return; warmed = true;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'en-US'; window.speechSynthesis.speak(u); } catch (e) { /* 무시 */ }
 }
 // 기기 음성: 목소리를 지정해 읽고, 실패하거나 시작하지 않으면 → 목소리를 지정하지 않고 → 꾸밈 없는 문장으로, 총 3번까지 시도해요. 끝내 안 되면 원인을 스피커 아래에 알려 줘요.
-function speakNow(text, tries) {
-  tries = tries || 0;
-  const synth = window.speechSynthesis;
-  const u = new SpeechSynthesisUtterance((tries < 2 ? ', ' : '') + text); u.lang = 'en-US'; u.rate = tries < 2 ? 0.9 : 1;
-  if (tries === 0 && enVoice) u.voice = enVoice;
+function speakNow(text, i, list) {
+  i = i || 0; list = list || buildVoiceList();
+  const synth = window.speechSynthesis, voice = list[i], last = i >= list.length - 1;
+  const u = new SpeechSynthesisUtterance((i < 2 ? ', ' : '') + text); u.lang = 'en-US'; u.rate = i < 2 ? 0.9 : 1;
+  if (voice) u.voice = voice;
   let started = false, failed = false;
-  const retry = (why) => {
+  const next = (why) => {
     lastErr = why || lastErr;
-    if (tries === 0 && enVoice) { voiceBad = true; enVoice = null; }
-    if (tries < 2) speakNow(text, tries + 1); else setLast('기기 음성 — 실패 (' + (lastErr || '시작 신호 없음') + '). 기기 음량·무음 모드·음성 엔진을 확인해 주세요');
+    if (voice) failedVoices.add(voiceKey(voice));
+    if (!last) speakNow(text, i + 1, list);
+    else setLast('기기 음성 — 실패 (' + (lastErr || '시작 신호 없음') + '). 기기의 텍스트 음성 변환(TTS) 설정을 확인해 주세요');
   };
-  u.onstart = () => { started = true; };
+  u.onstart = () => { started = true; lastVoice = voice ? voice.name : '기본 목소리'; if (voice) { try { localStorage.setItem('voca.voice', voiceKey(voice)); } catch (e) { /* 무시 */ } } };
   u.onend = () => { started = true; if (curUtter === u) curUtter = null; };
   u.onerror = (e) => {
     const code = (e && e.error) || 'error';
     if (curUtter === u) curUtter = null;
     if (code === 'canceled' || code === 'interrupted') { started = true; return; }   // 우리가 끊은 것
-    if (failed) return; failed = true; retry(code);
+    if (failed) return; failed = true; next(code);
   };
   curUtter = u;
-  try { synth.speak(u); } catch (e) { failed = true; retry('speak 호출 실패'); return; }
-  setTimeout(() => {   // 시작 신호가 없으면 엔진이 멈춘 것이니 한 번 깨워서 다시 시도해요
+  try { synth.speak(u); } catch (e) { failed = true; next('speak 호출 실패'); return; }
+  setTimeout(() => {   // 시작 신호가 없으면 엔진이 멈춘 것이니 한 번 깨워서 다음 목소리로 시도해요
     if (started || failed || curUtter !== u) return;
     failed = true;
     try { synth.cancel(); } catch (e) { /* 무시 */ }
     try { synth.resume(); } catch (e) { /* 무시 */ }
-    curUtter = null; retry('시작 신호 없음');
-  }, 1800);
+    curUtter = null; next('시작 신호 없음');
+  }, 1300);
 }
 // 안드로이드는 기기 음성 엔진이 시작할 때 앞부분이 잘리는 경우가 많아요. 그래서 기본은 사전의 녹음된 발음(mp3)을 쓰고,
 // 음원이 없는 단어나 인터넷이 안 될 때만 기기 음성으로 읽어요. 음원 주소는 기기에 저장하고, 곧 나올 단어는 미리 받아 둬요.
@@ -379,20 +392,27 @@ let curAudio = null, speakToken = 0;
 function resolveAudio(word) {
   const key = String(word).toLowerCase();
   if (audioUrls.has(key)) { const v = audioUrls.get(key); return typeof v === 'string' ? Promise.resolve(v) : v; }
-  try { const c = localStorage.getItem('voca.au.' + key); if (c !== null) { const u = c === '-' ? '' : c; audioUrls.set(key, u); return Promise.resolve(u); } } catch (e) { /* 무시 */ }
+  try {
+    const c = localStorage.getItem('voca.au.' + key);
+    if (c !== null) {
+      // '녹음 없음' 기록은 2일 뒤에 다시 확인해요 (사전 서버가 잠깐 비었던 것이 영원히 남지 않게). 예전 형식('-')은 한 번 다시 확인해요.
+      const none = c.charAt(0) === '-', t = none ? +c.split(':')[1] : 0;
+      if (!none || (t && Date.now() - t < 2 * 86400000)) { const u = none ? '' : c; audioUrls.set(key, u); return Promise.resolve(u); }
+    }
+  } catch (e) { /* 무시 */ }
   const ctl = typeof AbortController === 'function' ? new AbortController() : null, to = setTimeout(() => { if (ctl) ctl.abort(); }, 4500);
   const p = fetch('https://api.dictionaryapi.dev/v2/entries/en/' + encodeURIComponent(key), ctl ? { signal: ctl.signal } : undefined)
     .then(async (r) => {
       if (r.status === 404) return { url: '', keep: true };
-      if (!r.ok) throw new Error('http');
+      if (!r.ok) throw new Error('사전 서버 응답 ' + r.status);
       const j = await r.json(); let best = '';
       if (Array.isArray(j)) outer: for (const e of j) for (const ph of (e.phonetics || [])) { const u = ph && ph.audio; if (u && /^https:\/\//.test(u)) { if (/-us\.mp3$/.test(u)) { best = u; break outer; } if (!best) best = u; } }
       return { url: best, keep: true };
     })
-    .catch(() => ({ url: '', keep: false }))   // 인터넷 오류는 저장하지 않고 다음에 다시 시도해요
+    .catch((e) => { lastDictWhy = '연결 실패 (' + String((e && e.message) || e).slice(0, 40) + ')'; return { url: '', keep: false }; })   // 인터넷 오류는 저장하지 않고 다음에 다시 시도해요
     .then((o) => {
       clearTimeout(to);
-      if (o.keep) { audioUrls.set(key, o.url); try { localStorage.setItem('voca.au.' + key, o.url || '-'); } catch (e) { /* 무시 */ } } else audioUrls.delete(key);
+      if (o.keep) { audioUrls.set(key, o.url); lastDictWhy = o.url ? '정상' : '이 단어의 녹음이 없다고 해요'; try { localStorage.setItem('voca.au.' + key, o.url || '-:' + Date.now()); } catch (e) { /* 무시 */ } } else audioUrls.delete(key);
       return o.url;
     });
   audioUrls.set(key, p);
@@ -467,9 +487,10 @@ function playBuffer(buf) {
 // 소리가 안 날 때 원인을 좁히기 위한 정보 (설정의 '발음 확인'에 표시돼요)
 function speakDiag() {
   const p = [];
-  try { p.push('음성 엔진: ' + (canSpeak() ? '목소리 ' + window.speechSynthesis.getVoices().length + '개' + (enVoice ? ' (' + enVoice.name + ')' : ' (기본 목소리)') : '없음')); } catch (e) { p.push('음성 엔진: 확인 실패'); }
+  try { p.push('음성 엔진: ' + (canSpeak() ? '목소리 ' + window.speechSynthesis.getVoices().length + '개' + (lastVoice ? ' (최근 성공: ' + lastVoice + ')' : '') + (failedVoices.size ? ', 실패한 목소리 ' + failedVoices.size + '개' : '') : '없음')); } catch (e) { p.push('음성 엔진: 확인 실패'); }
   p.push('웹 오디오: ' + (actx ? actx.state : '아직 안 만듦'));
   if (lastErr) p.push('마지막 기기 음성 오류: ' + lastErr);
+  if (lastDictWhy) p.push('사전 녹음: ' + lastDictWhy);
   return p.join(' · ');
 }
 // 삐 소리: 기기의 소리 출력(음량·무음·블루투스)이 살아 있는지 앱 음성과 상관없이 확인해요
@@ -527,7 +548,7 @@ function speak(text) {
     const play = (b) => ensureRunning().then((ok) => { if (tok !== speakToken) return; if (ok && playBuffer(b)) setLast('사전 녹음 (웹 오디오)'); else viaElement(url, '웹 오디오가 멈춰 있어요'); });
     if (buf) { play(buf); return; }
     audioCtx();
-    loadBuffer(key, url).then(play).catch((e) => { if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
+    loadBuffer(key, url).then(play).catch((e) => { lastDictWhy = '음원 받기 실패 (' + String(e && e.message || e).slice(0, 40) + ')'; if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
   };
   if (typeof known === 'string') { go(known); return; }
   Promise.race([resolveAudio(text), new Promise((r) => setTimeout(() => r(''), 1500))]).then(go);   // 처음 보는 단어는 주소를 확인하고 재생, 늦으면 기기 음성
