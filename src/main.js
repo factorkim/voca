@@ -339,10 +339,20 @@ function warmUp() {
   if (warmed || !canSpeak()) return; warmed = true;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'en-US'; window.speechSynthesis.speak(u); } catch (e) { /* 무시 */ }
 }
-function speakNow(text) {
+function speakNow(text, retried) {
+  const synth = window.speechSynthesis;
   const u = new SpeechSynthesisUtterance(', ' + text); u.lang = 'en-US'; u.rate = 0.9; if (enVoice) u.voice = enVoice;
-  curUtter = u; u.onend = u.onerror = () => { if (curUtter === u) curUtter = null; };
-  window.speechSynthesis.speak(u);
+  let started = false; u.onstart = () => { started = true; };
+  curUtter = u; u.onend = u.onerror = () => { started = true; if (curUtter === u) curUtter = null; };
+  synth.speak(u);
+  // 기기 음성 엔진이 멈춰 있으면 말을 시작하지 않아요. 잠시 기다려도 시작하지 않으면 한 번 다시 시도해요.
+  setTimeout(() => {
+    if (started || curUtter !== u) return;
+    try { synth.cancel(); } catch (e) { /* 무시 */ }
+    curUtter = null;
+    if (!retried) { try { synth.resume(); } catch (e) { /* 무시 */ } speakNow(text, true); }
+    else setLast('기기 음성 — 시작되지 않았어요 (기기 음량·무음 모드를 확인해 주세요)');
+  }, 1800);
 }
 // 안드로이드는 기기 음성 엔진이 시작할 때 앞부분이 잘리는 경우가 많아요. 그래서 기본은 사전의 녹음된 발음(mp3)을 쓰고,
 // 음원이 없는 단어나 인터넷이 안 될 때만 기기 음성으로 읽어요. 음원 주소는 기기에 저장하고, 곧 나올 단어는 미리 받아 둬요.
@@ -403,10 +413,24 @@ function keepAlive(on) {
 const bufCache = new Map();
 function audioCtx() {
   try {
+    if (actx && actx.state === 'closed') { actx = null; keepNode = null; }
     if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (C) actx = new C(); }
-    if (actx && actx.state === 'suspended') actx.resume().catch(() => {});
+    if (actx && actx.state !== 'running') { const p = actx.resume(); if (p && p.catch) p.catch(() => {}); }   // 백그라운드에 다녀오면 멈춰 있을 수 있어요(suspended/interrupted)
   } catch (e) { actx = null; }
   return actx;
+}
+// 웹 오디오가 실제로 돌고 있는지 확인해요. 멈춰 있으면 깨워 보고, 그래도 안 되면 새로 만들어 봐요. (멈춘 채로 '재생'하면 소리 없이 지나가요)
+const ctxRunning = () => !!actx && actx.state === 'running';
+function ensureRunning() {
+  const wait = (c) => Promise.race([c.resume().then(() => c.state === 'running', () => false), new Promise((r) => setTimeout(() => r(c.state === 'running'), 500))]);
+  const c = audioCtx(); if (!c) return Promise.resolve(false);
+  if (c.state === 'running') return Promise.resolve(true);
+  return wait(c).then((ok) => {
+    if (ok) return true;
+    try { c.close(); } catch (e) { /* 무시 */ }
+    actx = null; keepNode = null;
+    const c2 = audioCtx(); return c2 ? wait(c2) : false;
+  }).catch(() => false);
 }
 async function loadBuffer(key, url) {
   if (bufCache.has(key)) return bufCache.get(key);
@@ -457,15 +481,20 @@ function speak(text) {
   if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { setLast('기기 음성 (설정)'); ttsSpeak(text); return; }
   const key = String(text).toLowerCase(), known = audioUrls.get(key);
   const tts = (why) => { if (tok !== speakToken) return; setLast('기기 음성 — ' + why); ttsSpeak(text); };
-  const viaElement = (url, why) => { playUrl(key, url).then((ok) => { if (tok !== speakToken) return; if (ok) setLast('사전 녹음 (일반 재생기' + (why ? ': ' + why : '') + ')'); else tts('재생이 막혔어요'); }); };
+  const viaElement = (url, why) => {
+    let done = false;
+    const to = setTimeout(() => { if (done || tok !== speakToken) return; done = true; stopAudio(); tts('음원 재생이 늦어서 대신해요'); }, 2500);   // 음원 서버가 느리거나 멈추면 기기 음성으로
+    playUrl(key, url).then((ok) => { if (done) return; done = true; clearTimeout(to); if (tok !== speakToken) return; if (ok) setLast('사전 녹음 (일반 재생기' + (why ? ': ' + why : '') + ')'); else tts('재생이 막혔어요'); });
+  };
   const go = (url) => {
     if (tok !== speakToken) return;
     if (!url) { tts(audioUrls.get(key) === '' ? '사전에 이 단어의 녹음이 없어요' : '사전에 연결하지 못했어요'); return; }
     const buf = bufCache.get(key);
-    if (buf && playBuffer(buf)) { setLast('사전 녹음 (웹 오디오)'); return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
+    if (buf && ctxRunning() && playBuffer(buf)) { setLast('사전 녹음 (웹 오디오)'); return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
+    const play = (b) => ensureRunning().then((ok) => { if (tok !== speakToken) return; if (ok && playBuffer(b)) setLast('사전 녹음 (웹 오디오)'); else viaElement(url, '웹 오디오가 멈춰 있어요'); });
+    if (buf) { play(buf); return; }
     audioCtx();
-    loadBuffer(key, url).then((b) => { if (tok !== speakToken) return; if (playBuffer(b)) setLast('사전 녹음 (웹 오디오)'); else viaElement(url, '웹 오디오 사용 불가'); })
-      .catch((e) => { if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
+    loadBuffer(key, url).then(play).catch((e) => { if (tok === speakToken) viaElement(url, String(e && e.message || e).slice(0, 40)); });
   };
   if (typeof known === 'string') { go(known); return; }
   Promise.race([resolveAudio(text), new Promise((r) => setTimeout(() => r(''), 1500))]).then(go);   // 처음 보는 단어는 주소를 확인하고 재생, 늦으면 기기 음성
@@ -1012,6 +1041,8 @@ function syncKeyboard() {
 }
 if (window.visualViewport) { window.visualViewport.addEventListener('resize', syncKeyboard); window.visualViewport.addEventListener('scroll', syncKeyboard); }
 document.addEventListener('focusout', () => setTimeout(syncKeyboard, 100));
+// 소리 출력이 멈춰 있으면(백그라운드에 다녀온 뒤 등) 화면을 터치할 때 다시 깨워요. 깨우려면 사용자의 터치가 필요해요.
+document.addEventListener('pointerdown', () => { if (actx && actx.state !== 'running') audioCtx(); }, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { ui.hidden = true; persistCache(); keepAlive(false); return; }
   if (ui.route === 'study') keepAlive(true);
