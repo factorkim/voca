@@ -390,8 +390,12 @@ const audioSrc = () => { try { return localStorage.getItem('voca.audiosrc') === 
 const audioUrls = new Map();   // 단어 -> 주소('' = 음원 없음) 또는 확인 중인 Promise
 const audioEls = new Map();    // 단어 -> Audio (최근 16개)
 let curAudio = null, speakToken = 0;
+// 사전 서버가 흔한 단어(공백 없는 단어)에도 연달아 '없음'(404)을 답하면 서버가 죽은 것으로 보고 6시간 동안 사전을 건너뛰고 바로 외부 녹음을 써요.
+let dict404 = 0;
+const dictDown = () => { try { const t = +localStorage.getItem('voca.dictdown'); return t > 0 && Date.now() - t < 6 * 3600000; } catch (e) { return false; } };
 function resolveAudio(word) {
   const key = String(word).toLowerCase();
+  if (dictDown() && !audioUrls.has(key)) { lastDictWhy = '사전 서버가 계속 없음(404)이라고 답해서 잠시 건너뛰어요'; return Promise.resolve(''); }
   if (audioUrls.has(key)) { const v = audioUrls.get(key); return typeof v === 'string' ? Promise.resolve(v) : v; }
   try {
     const c = localStorage.getItem('voca.au.' + key);
@@ -404,10 +408,11 @@ function resolveAudio(word) {
   const ctl = typeof AbortController === 'function' ? new AbortController() : null, to = setTimeout(() => { if (ctl) ctl.abort(); }, 4500);
   const p = fetch('https://api.dictionaryapi.dev/v2/entries/en/' + encodeURIComponent(key), ctl ? { signal: ctl.signal } : undefined)
     .then(async (r) => {
-      if (r.status === 404) return { url: '', keep: true };
+      if (r.status === 404) { if (/^[a-z]+$/.test(key) && ++dict404 >= 3) { try { localStorage.setItem('voca.dictdown', String(Date.now())); } catch (e) { /* 무시 */ } } return { url: '', keep: true }; }
       if (!r.ok) throw new Error('사전 서버 응답 ' + r.status);
       const j = await r.json(); let best = '';
       if (Array.isArray(j)) outer: for (const e of j) for (const ph of (e.phonetics || [])) { const u = ph && ph.audio; if (u && /^https:\/\//.test(u)) { if (/-us\.mp3$/.test(u)) { best = u; break outer; } if (!best) best = u; } }
+      if (best) { dict404 = 0; try { localStorage.removeItem('voca.dictdown'); } catch (e) { /* 무시 */ } }
       return { url: best, keep: true };
     })
     .catch((e) => { lastDictWhy = '연결 실패 (' + String((e && e.message) || e).slice(0, 40) + ')'; return { url: '', keep: false }; })   // 인터넷 오류는 저장하지 않고 다음에 다시 시도해요
