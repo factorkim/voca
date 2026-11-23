@@ -329,7 +329,8 @@ function wNext() { if (ui.held) { pick(); render(); } }
 // (2) 단어 앞에 쉼표를 붙여 짧은 쉼으로 시작해요. 기기가 소리 출력을 여는 동안 단어 앞부분이 아니라 이 쉼이 잘려요.
 // (3) 읽는 중이 아니면 터치/키 입력 안에서 바로 재생해요. 일부 브라우저(iOS 등)는 입력 직후가 아니면 소리를 막아요.
 // (4) 영어(미국) 목소리를 직접 고르고, 재생 중인 객체를 변수에 잡아 둬서 중간에 사라지지 않게 해요.
-let speakTimer = 0, warmed = false, curUtter = null, lastErr = '', lastVoice = '', lastDictWhy = '';
+let speakTimer = 0, warmed = false, curUtter = null, lastErr = '', lastVoice = '', lastDictWhy = '', lastExtWhy = '';
+const externalUrl = (w) => 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(w) + '&type=2';
 const failedVoices = new Set();
 const canSpeak = () => 'speechSynthesis' in window;
 const voiceKey = (v) => (v && (v.voiceURI || v.name)) || '';
@@ -491,7 +492,27 @@ function speakDiag() {
   p.push('웹 오디오: ' + (actx ? actx.state : '아직 안 만듦'));
   if (lastErr) p.push('마지막 기기 음성 오류: ' + lastErr);
   if (lastDictWhy) p.push('사전 녹음: ' + lastDictWhy);
+  if (lastExtWhy) p.push('외부 녹음: ' + lastExtWhy);
   return p.join(' · ');
+}
+// 자세한 진단: 어느 경로가 막혔는지 하나씩 직접 시험해요 (사전 서버, 외부 음원, 기기 음성 엔진)
+async function probe() {
+  const out = [];
+  try {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 4000);
+    const r = await fetch('https://api.dictionaryapi.dev/v2/entries/en/abandon', { signal: ctl.signal }); clearTimeout(t);
+    let a = ''; try { const j = await r.json(); a = Array.isArray(j) && JSON.stringify(j).indexOf('.mp3') >= 0 ? ', 음원 있음' : ', 음원 없음'; } catch (e) { /* 무시 */ }
+    out.push('사전 서버: 응답 ' + r.status + a);
+  } catch (e) { out.push('사전 서버: 연결 안 됨 (' + String((e && e.message) || e).slice(0, 30) + ')'); }
+  out.push('외부 음원: ' + await new Promise((res) => {
+    const a = new Audio(); const t = setTimeout(() => res('시간 초과'), 5000);
+    a.preload = 'auto'; a.oncanplay = () => { clearTimeout(t); res('받을 수 있어요'); }; a.onerror = () => { clearTimeout(t); res('받을 수 없어요'); };
+    a.src = externalUrl('abandon'); try { a.load(); } catch (e) { clearTimeout(t); res('시험 실패'); }
+  }));
+  let n = -1; try { n = window.speechSynthesis.getVoices().length; } catch (e) { /* 무시 */ }
+  out.push('기기 음성 엔진: ' + (canSpeak() ? '목소리 ' + n + '개, 실패한 목소리 ' + failedVoices.size + '개' + (lastErr ? ' (' + lastErr + ')' : '') : '없음'));
+  out.push('웹 오디오: ' + (actx ? actx.state : '아직 안 만듦'));
+  return out.join(' / ');
 }
 // 삐 소리: 기기의 소리 출력(음량·무음·블루투스)이 살아 있는지 앱 음성과 상관없이 확인해요
 function beep() {
@@ -535,6 +556,12 @@ function speak(text) {
   if (audioSrc() !== 'dict' || typeof Audio === 'undefined') { setLast('기기 음성 (설정)'); ttsSpeak(text); return; }
   const key = String(text).toLowerCase(), known = audioUrls.get(key);
   const tts = (why) => { if (tok !== speakToken) return; setLast('기기 음성 — ' + why); ttsSpeak(text); };
+  // 사전에 녹음이 없거나(숙어 등) 사전에 연결하지 못하면, 기기의 음성 엔진에 기대지 않는 외부 녹음(Youdao 발음 서비스, 숙어도 읽어 줘요)을 먼저 써 봐요. 안 되면 기기 음성이에요.
+  const viaExternal = (why) => {
+    let done = false;
+    const to = setTimeout(() => { if (done || tok !== speakToken) return; done = true; stopAudio(); tts(why + ' · 외부 음원도 늦어요'); }, 3500);
+    playUrl('yd:' + key, externalUrl(text)).then((ok) => { if (done) return; done = true; clearTimeout(to); if (tok !== speakToken) return; if (ok) { lastExtWhy = '정상'; setLast('외부 녹음 (Youdao)'); } else { lastExtWhy = '재생 실패'; tts(why + ' · 외부 음원도 안 돼요'); } });
+  };
   const viaElement = (url, why) => {
     let done = false;
     const to = setTimeout(() => { if (done || tok !== speakToken) return; done = true; stopAudio(); tts('음원 재생이 늦어서 대신해요'); }, 2500);   // 음원 서버가 느리거나 멈추면 기기 음성으로
@@ -542,7 +569,7 @@ function speak(text) {
   };
   const go = (url) => {
     if (tok !== speakToken) return;
-    if (!url) { tts(audioUrls.get(key) === '' ? '사전에 이 단어의 녹음이 없어요' : '사전에 연결하지 못했어요'); return; }
+    if (!url) { viaExternal(audioUrls.get(key) === '' ? '사전에 이 단어의 녹음이 없어요' : '사전에 연결하지 못했어요'); return; }
     const buf = bufCache.get(key);
     if (buf && ctxRunning() && playBuffer(buf)) { setLast('사전 녹음 (웹 오디오)'); return; }   // 이미 받은 음원은 입력 이벤트 안에서 바로 재생
     const play = (b) => ensureRunning().then((ok) => { if (tok !== speakToken) return; if (ok && playBuffer(b)) setLast('사전 녹음 (웹 오디오)'); else viaElement(url, '웹 오디오가 멈춰 있어요'); });
@@ -874,7 +901,7 @@ function viewBackup() {
     '<label class="field" for="newPerDay"><span>하루 새 단어 수</span><select id="newPerDay">' + np + '</select></label>' +
     '<label class="field" for="dirSel"><span>출제 방향</span><select id="dirSel">' + dr + '</select></label>' +
     (canSpeak() ? '<label class="field" for="autoSel"><span>자동 발음</span><select id="autoSel">' + [['1', '모든 카드'], ['new', '새 단어만'], ['0', '끄기']].map((o) => '<option value="' + o[0] + '"' + ((autoMode() === 'all' && o[0] === '1') || autoMode() === o[0] || (autoMode() === 'off' && o[0] === '0') ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' : '') +
-    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button><button class="btn" data-act="beepTest">소리 테스트 (삐)</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p><label class="field" for="noteSel"><span>재생 방식 표시</span><select id="noteSel"><option value="1"' + (noteOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (noteOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
+    (canSpeak() ? '<label class="field" for="srcSel"><span>발음 음원</span><select id="srcSel"><option value="dict"' + (audioSrc() === 'dict' ? ' selected' : '') + '>사전 녹음 (권장)</option><option value="tts"' + (audioSrc() === 'tts' ? ' selected' : '') + '>기기 음성</option></select></label><p class="muted small">사전 녹음은 앞부분이 잘리지 않아요. 음원이 없는 단어나 인터넷이 안 될 때는 기기 음성으로 읽어요.</p><div class="btnrow"><button class="btn" data-act="speakTest">발음 확인 (abandon)</button><button class="btn" data-act="beepTest">소리 테스트 (삐)</button></div><div class="btnrow"><button class="btn" data-act="probeTest">자세한 진단</button></div><p class="muted small" id="speakInfo" aria-live="polite"></p><label class="field" for="noteSel"><span>재생 방식 표시</span><select id="noteSel"><option value="1"' + (noteOn() ? ' selected' : '') + '>켜기</option><option value="0"' + (noteOn() ? '' : ' selected') + '>끄기</option></select></label>' : '') +
     '<label class="field" for="revealSel"><span>자동 정답 공개</span><select id="revealSel">' + AUTO_REVEAL.map((x) => '<option value="' + x.v + '"' + (autoRevealSec() === x.v ? ' selected' : '') + '>' + x.label + '</option>').join('') + '</select></label>' +
     '<label class="field" for="shuffleSel"><span>새 단어 순서</span><select id="shuffleSel"><option value="1"' + (SET.shuffle ? ' selected' : '') + '>Day 안에서 섞기</option><option value="0"' + (SET.shuffle ? '' : ' selected') + '>단어장 순서 그대로</option></select></label>' +
     '<label class="field" for="capSel"><span>하루 복습 상한</span><select id="capSel">' + CAP_CHOICES.map((n) => '<option value="' + n + '"' + (SET.cap === n ? ' selected' : '') + '>' + (n ? n + '번' : '제한 없음') + '</option>').join('') + '</select></label>' +
@@ -1029,6 +1056,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'leech') go('study', 'leech');
   else if (a === 'quiz') { { const q = b.getAttribute('data-q'); ui.quiz = q === 'write' || q === 'mix' ? q : 'read'; } try { localStorage.setItem('voca.quiz', ui.quiz); } catch (e) { /* 무시 */ } render(); }
   else if (a === 'speakTest') { audioCtx(); speak('abandon'); setTimeout(() => { const el = $('#speakInfo'); if (el) el.textContent = '방금 재생: ' + (lastSpeak || '재생하지 못했어요') + ' / ' + speakDiag(); }, 2200); }
+  else if (a === 'probeTest') { const el = $('#speakInfo'); if (el) el.textContent = '시험 중이에요… (최대 10초)'; probe().then((m) => { const e2 = $('#speakInfo'); if (e2) e2.textContent = m; }); }
   else if (a === 'beepTest') { beep().then((m) => { const el = $('#speakInfo'); if (el) el.textContent = m + ' / ' + speakDiag(); }); }
   else if (a === 'undo') undo();
   else if (a === 'wCheck') wCheck();
